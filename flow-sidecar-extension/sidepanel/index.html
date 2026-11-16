@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flow Sidecar Orchestrator</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="brand-row">
+        <span class="brand-dot"></span>
+        <h1 class="brand-title">Flow Sidecar Orchestrator</h1>
+      </div>
+      <button id="toggleSettingsBtn" class="icon-btn" type="button" aria-expanded="true" title="Toggle Settings Drawer">
+        <span>⚙️ Settings</span>
+        <span id="settingsChevron" class="chevron">▾</span>
+      </button>
+    </header>
+
+    <!-- Strict Validation Inline Error Banner -->
+    <div id="validationBanner" class="validation-banner hidden" role="alert" aria-live="assertive">
+      <div class="validation-banner-content">
+        <span class="validation-icon">⚠️</span>
+        <span id="validationBannerText">Configuration incomplete.</span>
+      </div>
+      <button id="dismissBannerBtn" class="banner-close-btn" type="button" aria-label="Dismiss error">✕</button>
+    </div>
+
+    <!-- SECTION 1: Collapsible Settings Drawer -->
+    <section id="settingsDrawer" class="panel-section settings-drawer">
+      <div class="section-header">
+        <span class="section-title">1. Configuration &amp; Flow Parameters</span>
+        <span id="saveStatusBadge" class="save-badge">Unsaved</span>
+      </div>
+
+      <form id="settingsForm" class="settings-grid" autocomplete="off" novalidate>
+        <!-- Strict Zero-Default API Fields -->
+        <div class="field-group full-width">
+          <label for="baseUrlInput">Base URL <span class="req">*</span></label>
+          <input id="baseUrlInput" type="text" value="" autocomplete="off" spellcheck="false" />
+        </div>
+
+        <div class="field-group full-width">
+          <label for="apiKeyInput">API Key</label>
+          <input id="apiKeyInput" type="password" value="" autocomplete="new-password" spellcheck="false" />
+        </div>
+
+        <div class="field-group full-width">
+          <div class="label-row">
+            <label for="modelNameInput">Model Name (Manual ID or Fetch from Aggregator) <span class="req">*</span></label>
+            <button id="fetchModelsBtn" type="button" class="btn btn-secondary btn-xs" title="Fetch available models from Base URL /models endpoint">
+              🔄 Fetch Models
+            </button>
+          </div>
+          <div class="model-input-stack">
+            <input
+              id="modelNameInput"
+              type="text"
+              value=""
+              list="fetchedModelsDatalist"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <datalist id="fetchedModelsDatalist"></datalist>
+            <select id="fetchedModelsSelect" class="hidden" aria-label="Fetched aggregator models">
+              <option value="">-- Select fetched model --</option>
+            </select>
+            <span id="fetchModelsStatus" class="field-hint hidden"></span>
+          </div>
+        </div>
+
+        <div class="field-group full-width">
+          <div class="label-row">
+            <label for="systemPromptInput">Custom System Prompt <span class="optional-tag">(Optional — uses Default System Prompt if blank)</span></label>
+            <button id="fillDefaultPromptBtn" type="button" class="btn-link" title="Insert the built-in default system prompt so you can inspect or customize it">
+              Load Default
+            </button>
+          </div>
+          <textarea
+            id="systemPromptInput"
+            rows="3"
+            spellcheck="true"
+            placeholder="Built-in Flow visual director system prompt is active by default. Add custom instructions or style rules here (optional)..."
+          ></textarea>
+        </div>
+
+        <hr class="divider full-width" />
+
+        <!-- Flow Target Controls -->
+        <div class="field-group">
+          <label for="aspectRatioSelect">Aspect Ratio</label>
+          <select id="aspectRatioSelect">
+            <option value="1:1">1:1</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+            <option value="4:3">4:3</option>
+            <option value="3:4">3:4</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="targetFlowModelSelect">Target Model in Flow</label>
+          <select id="targetFlowModelSelect">
+            <option value="Nano Banana 2.1">Nano Banana 2.1</option>
+            <option value="Nano Banana Pro">Nano Banana Pro</option>
+            <option value="Nano Banana 2 Lite">Nano Banana 2 Lite</option>
+          </select>
+        </div>
+
+        <div class="field-group full-width">
+          <label for="imagesPerPromptSelect">Images per Prompt (in Flow)</label>
+          <select id="imagesPerPromptSelect">
+            <option value="1" selected>1 image (Default)</option>
+            <option value="2">2 images</option>
+            <option value="3">3 images</option>
+            <option value="4">4 images (Max)</option>
+          </select>
+        </div>
+
+        <div class="field-group full-width">
+          <label class="checkbox-row" for="allowAiOverridesCheckbox">
+            <input id="allowAiOverridesCheckbox" type="checkbox" checked />
+            <span>Allow AI to dynamically override Aspect Ratio, Flow Model &amp; Images per Prompt</span>
+          </label>
+        </div>
+
+        <!-- Dedicated Img2Img Reference Image Upload -->
+        <div class="field-group full-width">
+          <label for="img2imgFileInput">Img2Img Reference Image</label>
+          <div class="img2img-control-row">
+            <input id="img2imgFileInput" type="file" accept="image/png,image/jpeg,image/webp" class="file-input-compact" />
+            <button id="clearImg2ImgBtn" type="button" class="btn btn-secondary btn-xs" disabled>Clear</button>
+          </div>
+          <div id="img2imgPreviewContainer" class="img2img-preview-box hidden">
+            <img id="img2imgPreviewThumb" src="" alt="Img2Img Reference Preview" />
+            <span id="img2imgMetaText" class="img2img-meta"></span>
+          </div>
+        </div>
+
+        <!-- Download Folder Picker (Explorer) & Pacing Delay -->
+        <div class="field-group full-width">
+          <div class="label-row">
+            <label for="downloadSubfolderInput">Download Folder</label>
+            <div class="folder-btn-group">
+              <button id="pickFolderBtn" type="button" class="btn btn-secondary btn-xs" title="Choose folder via Windows Explorer">
+                📂 Choose Folder...
+              </button>
+              <button id="clearFolderBtn" type="button" class="btn btn-secondary btn-xs hidden" title="Clear selected Explorer folder">
+                ✕
+              </button>
+            </div>
+          </div>
+          <div id="pickedFolderBadge" class="picked-folder-badge hidden">
+            <span class="folder-icon">📁</span>
+            <span id="pickedFolderNameText"></span>
+          </div>
+          <input
+            id="downloadSubfolderInput"
+            type="text"
+            value=""
+            placeholder="Subfolder name in Downloads (e.g. Flow_Batches)"
+            autocomplete="off"
+          />
+          <label class="checkbox-row" for="upscaleDownloadCheckbox" title="Downloads Flow's 2K upscaled version instead of the original 1K image">
+            <input id="upscaleDownloadCheckbox" type="checkbox" />
+            <span>Upscale downloads to 2K (default: original 1K size)</span>
+          </label>
+          <label class="checkbox-row" for="saveAsDialogCheckbox" title="Opens Windows Explorer Save-As dialog so you can save anywhere on disk in Brave">
+            <input id="saveAsDialogCheckbox" type="checkbox" />
+            <span>Open Explorer "Save As" dialog on download (allows any disk path in Brave)</span>
+          </label>
+          <span id="braveFsHint" class="field-hint hidden">
+            💡 Brave blocks extensions from picking a save folder by default. Type a folder name above to save into <code>Downloads/&lt;name&gt;</code>, or enable <code>brave://flags/#file-system-access-api</code> and restart Brave to use Choose Folder for any folder on disk.
+          </span>
+        </div>
+
+        <div class="field-group full-width">
+          <label for="pacingDelayInput">Pacing Delay Between Queue Steps (sec)</label>
+          <input id="pacingDelayInput" type="number" min="1" step="0.5" value="2" />
+        </div>
+
+        <div class="settings-actions full-width">
+          <button id="saveSettingsBtn" type="submit" class="btn btn-primary full-width">
+            💾 Save Configuration
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <!-- SECTION 2: Vision Chat & Prompt Expander -->
+    <section class="panel-section chat-section">
+      <div class="section-header">
+        <span class="section-title">2. Vision Chat &amp; Prompt Expander</span>
+        <button id="clearChatBtn" type="button" class="btn-link" title="Clear conversation history">Clear Chat</button>
+      </div>
+
+      <!-- Scrollable Message History -->
+      <div id="chatMessages" class="chat-history" aria-live="polite">
+        <div class="chat-bubble system">
+          Configure your Base URL, Model Name, and System Prompt above, then attach reference images or enter a concept to chat or expand batch prompts.
+        </div>
+      </div>
+
+      <!-- Reference Image Attachment Preview Strip -->
+      <div id="chatAttachmentStrip" class="attachment-strip hidden" aria-label="Attached reference images"></div>
+
+      <!-- Chat Input & Drop Zone -->
+      <div id="chatDropZone" class="chat-composer">
+        <input
+          id="chatAttachmentInput"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          class="sr-only"
+        />
+        <textarea
+          id="chatInputTextarea"
+          rows="2"
+          placeholder="Describe visual concept or drop reference images (PNG/JPG/WEBP)..."
+        ></textarea>
+        <div class="composer-toolbar">
+          <div class="composer-left">
+            <button id="attachImageBtn" type="button" class="btn btn-icon" title="Attach Reference Images (PNG/JPG/WEBP)">
+              📎 Attach
+            </button>
+            <button id="sendChatBtn" type="button" class="btn btn-secondary" title="Send standard multimodal chat message">
+              Chat
+            </button>
+          </div>
+          <div class="composer-right">
+            <label for="promptCountSelect" class="sr-only">Number of prompts</label>
+            <select id="promptCountSelect" class="count-select" title="Number of prompts to generate (Auto detects count from your message, defaulting to 1)">
+              <option value="auto" selected>1 (Auto)</option>
+              <option value="1">1 prompt</option>
+              <option value="2">2 prompts</option>
+              <option value="3">3 prompts</option>
+              <option value="4">4 prompts</option>
+              <option value="5">5 prompts</option>
+              <option value="8">8 prompts</option>
+            </select>
+            <button id="generatePromptsBtn" type="button" class="btn btn-accent" title="Expand into JSON prompt(s) and enqueue">
+              ✨ Generate Prompts
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 3: Execution Queue Monitor -->
+    <section class="panel-section queue-section">
+      <div class="section-header queue-header">
+        <div class="queue-title-group">
+          <span class="section-title">3. Execution Queue</span>
+          <span id="queueCountBadge" class="count-badge">0 prompts</span>
+        </div>
+        <span id="runnerStateBadge" class="runner-state state-idle">Idle</span>
+      </div>
+
+      <!-- Queue Action Controls -->
+      <div class="queue-controls">
+        <button id="startQueueBtn" type="button" class="btn btn-success">▶ Start Queue</button>
+        <button id="pauseQueueBtn" type="button" class="btn btn-warning" disabled>⏸ Pause</button>
+        <button id="clearQueueBtn" type="button" class="btn btn-danger">🗑 Clear Queue</button>
+      </div>
+
+      <!-- Queue Table -->
+      <div class="queue-table-wrapper">
+        <table class="queue-table">
+          <thead>
+            <tr>
+              <th class="col-prompt">Prompt Preview</th>
+              <th class="col-status">Status</th>
+              <th class="col-thumb">Result</th>
+              <th class="col-action">Action</th>
+            </tr>
+          </thead>
+          <tbody id="queueTableBody">
+            <tr class="empty-queue-row">
+              <td colspan="4">Queue is empty. Use "Generate Prompts" above to populate batch items.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Lightbox Modal for Inspecting Result Thumbnails -->
+  <div id="imageModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span id="modalTitle" class="modal-title">Generated Image Preview</span>
+        <button id="closeModalBtn" type="button" class="banner-close-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <img id="modalImage" src="" alt="Full resolution preview" />
+        <p id="modalPromptText" class="modal-prompt"></p>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

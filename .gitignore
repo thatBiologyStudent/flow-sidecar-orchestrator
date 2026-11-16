@@ -1,0 +1,16 @@
+# Build output (attach packages to GitHub Releases instead)
+dist/
+*.zip
+*.crx
+
+# Extension signing keys: never commit
+*.pem
+
+# Editor / OS / tooling
+.vscode/
+.idea/
+.claude/
+node_modules/
+Thumbs.db
+desktop.ini
+.DS_Store
