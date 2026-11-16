@@ -145,10 +145,9 @@ flow-sidecar-extension/          ← load this folder as the unpacked extension
 │   ├── dom-actions.js           Settings, prompt input, submit + verification, completion, download
 │   └── content.js               Runs one queue item end to end
 └── assets/icons/
-docs/                            Architecture notes and the original specification
 ```
 
-There is no build step: the extension is plain JavaScript. See [`docs/AGENT_HANDOFF.md`](docs/AGENT_HANDOFF.md) for architecture details and known pitfalls when Flow's UI changes.
+There is no build step: the extension is plain JavaScript.
 
 ### Packaging a release
 
