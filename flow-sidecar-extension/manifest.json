@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Sidecar Orchestrator",
+  "version": "1.1.0",
+  "description": "Vision-enabled multimodal AI sidecar and automated batch queue orchestrator for Google Labs Flow.",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "downloads",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "debugger"
+  ],
+  "host_permissions": [
+    "*://flow.google.com/*",
+    "*://*.flow.google.com/*",
+    "*://labs.google/*",
+    "*://*.labs.google/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Open Flow Sidecar Orchestrator",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*"
+      ],
+      "js": [
+        "content/dom-selectors.js",
+        "content/dom-actions.js",
+        "content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
