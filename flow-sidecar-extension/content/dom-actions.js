@@ -886,7 +886,10 @@
    */
   function getOutputSignature(el) {
     if (el instanceof HTMLImageElement) {
-      return `img:${el.currentSrc || el.src || ""}`;
+      const src = el.currentSrc || el.src || "";
+      // Flow re-renders the same asset with different size suffixes (=s256, =s512-rw, …): compare by asset
+      const assetId = getFlowAssetIdFromSrc(src);
+      return assetId ? `asset:${assetId}` : `img:${src}`;
     }
     if (el instanceof HTMLCanvasElement) {
       try {
@@ -1180,6 +1183,18 @@
     const startTime = Date.now();
     let observedBusy = false;
     let firstImageDetectedAt = null;
+    // When fewer images than requested are ready, only stop after Flow has been idle and no new image has
+    // appeared for this long. Flow delivers the images of one prompt one after another, and its busy
+    // indicators can briefly disappear in between; stopping early used to drop the last image(s) and leave
+    // Flow still generating while the next request started.
+    const PARTIAL_QUIET_MS = 20000;
+    // A prompt can make Flow render MORE images than requested (e.g. "make two shots"): once the requested
+    // number is there, keep collecting until Flow has been idle and nothing new arrived for this long.
+    const EXTRA_QUIET_MS = 6000;
+    const MAX_RESULTS = 8;
+    let lastBusyAt = Date.now();
+    let lastReadyCount = 0;
+    let lastNewImageAt = Date.now();
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -1197,6 +1212,7 @@
         const currentlyBusy = isFlowBusy();
         if (currentlyBusy) {
           observedBusy = true;
+          lastBusyAt = Date.now();
         }
 
         // Wait at least 900ms after submit before accepting new outputs
@@ -1204,6 +1220,8 @@
           return;
         }
 
+        // a reference chip may only get its Flow asset URL after submit: keep excluding those assets
+        for (const id of getReferenceAssetIds()) baselineSignatures.add(`asset:${id}`);
         const readyElements = [];
         const candidates = queryCandidateOutputs(128);
         for (const candidate of candidates) {
@@ -1214,6 +1232,7 @@
             continue;
           }
 
+          if (candidate.closest(REFERENCE_CONTAINERS)) continue;
           const sig = getOutputSignature(candidate);
           if (sig && !baselineSignatures.has(sig)) {
             readyElements.push(candidate);
@@ -1223,23 +1242,36 @@
         if (readyElements.length > 0 && !firstImageDetectedAt) {
           firstImageDetectedAt = Date.now();
         }
+        if (readyElements.length > lastReadyCount) {
+          lastReadyCount = readyElements.length;
+          lastNewImageAt = Date.now();
+        }
 
+        const now = Date.now();
         const allExpectedReady =
           readyElements.length >= targetCount &&
           firstImageDetectedAt &&
-          Date.now() - firstImageDetectedAt >= 800;
-        const settledAfterFirst =
+          ((!currentlyBusy && now - lastBusyAt >= EXTRA_QUIET_MS && now - lastNewImageAt >= EXTRA_QUIET_MS) ||
+            // busy markers are heuristic: don't wait forever on one that never clears
+            now - lastNewImageAt >= PARTIAL_QUIET_MS);
+        // Fewer images than requested: accept only after a long quiet period (e.g. Flow refused one image)
+        const settledWithFewer =
           firstImageDetectedAt &&
           !currentlyBusy &&
-          Date.now() - firstImageDetectedAt >= 2200;
+          now - lastBusyAt >= PARTIAL_QUIET_MS &&
+          now - lastNewImageAt >= PARTIAL_QUIET_MS;
+        const timedOut = now - startTime > timeoutMs;
 
-        if (readyElements.length > 0 && (!currentlyBusy || observedBusy) && (allExpectedReady || settledAfterFirst)) {
+        if (
+          readyElements.length > 0 &&
+          (allExpectedReady || settledWithFewer || timedOut)
+        ) {
           cleanup(observer);
           try {
             const dataUrls = [];
             const assetIds = [];
             let allDownloadedViaFlow = true;
-            for (const el of readyElements.slice(0, targetCount)) {
+            for (const el of readyElements.slice(0, MAX_RESULTS)) {
               // Remember Flow's asset ID so the image can later be picked as a reference
               assetIds.push(
                 el instanceof HTMLImageElement ? getFlowAssetIdFromSrc(el.currentSrc || el.src) : null
@@ -1271,7 +1303,7 @@
           return;
         }
 
-        if (Date.now() - startTime > timeoutMs) {
+        if (timedOut) {
           cleanup(observer);
           reject(
             new Error(
@@ -1300,12 +1332,89 @@
     });
   }
 
+  /** Elements that show reference images (prompt-box chips), never generation results. */
+  const REFERENCE_CONTAINERS = "flow-image-ingredient-chip, flow-prompt-box, button.chip-container";
+
+  /** Asset IDs of the reference images currently attached to the prompt box. */
+  function getReferenceAssetIds() {
+    const ids = new Set();
+    for (const img of queryAllDeep(`${REFERENCE_CONTAINERS.split(", ").map((s) => `${s} img`).join(", ")}`)) {
+      const id = getFlowAssetIdFromSrc(img.currentSrc || img.src || "");
+      if (id) ids.add(id);
+    }
+    return ids;
+  }
+
+  /**
+   * Waits until the media grid stops changing (an uploaded reference shows up there as its own tile,
+   * sometimes a few seconds after the upload finished) so it lands in the baseline, not in the results.
+   * @param {number} [quietMs=1500]
+   * @param {number} [maxMs=10000]
+   */
+  async function waitForOutputsToSettle(quietMs = 1500, maxMs = 10000) {
+    const start = Date.now();
+    const snapshot = () =>
+      queryCandidateOutputs(128)
+        .map((el) => getOutputSignature(el))
+        .sort()
+        .join("|");
+    let last = snapshot();
+    let stableSince = Date.now();
+    while (Date.now() - start < maxMs) {
+      await sleep(250);
+      const now = snapshot();
+      if (now !== last) {
+        last = now;
+        stableSince = Date.now();
+      } else if (Date.now() - stableSince >= quietMs) {
+        return;
+      }
+    }
+  }
+
+  /**
+   * Waits until Flow's prompt box is visible and (with `requireIdle`) Flow has shown no busy indicator
+   * for `quietMs`. Used before every generation step so a new prompt never starts while Flow is still
+   * finishing the previous one.
+   *
+   * @param {object} [options]
+   * @param {number} [options.timeoutMs=90000]
+   * @param {boolean} [options.requireIdle=true]
+   * @param {number} [options.quietMs=1500]
+   * @returns {Promise<void>} Rejects only when the prompt box never appears; a busy indicator that never
+   *   clears is tolerated after the timeout (Flow's busy markers are heuristic).
+   */
+  async function waitForFlowReady({ timeoutMs = 90000, requireIdle = true, quietMs = 1500 } = {}) {
+    const start = Date.now();
+    let idleSince = null;
+    while (Date.now() - start < timeoutMs) {
+      const promptEl = queryFirstVisible(FLOW_SELECTORS.promptInput);
+      const idle = !requireIdle || !isFlowBusy();
+      if (promptEl && idle) {
+        idleSince = idleSince ?? Date.now();
+        if (!requireIdle || Date.now() - idleSince >= quietMs) return;
+      } else {
+        idleSince = null;
+      }
+      await sleep(250);
+    }
+    if (!queryFirstVisible(FLOW_SELECTORS.promptInput)) {
+      throw new Error(
+        "Flow's prompt box did not become available (Flow may still be finishing the previous generation, or a dialog is open). Close any dialogs in the Flow tab and try again."
+      );
+    }
+  }
+
   /**
    * Snapshots current output image/canvas signatures before triggering generation.
    * @returns {Set<string>}
    */
-  function captureBaselineOutputSignatures() {
+  function captureBaselineOutputSignatures(excludeAssetIds = []) {
     const signatures = new Set();
+    // reference images (attached chips, and assets the caller passed as references) are never results
+    for (const id of [...excludeAssetIds, ...getReferenceAssetIds()]) {
+      if (id) signatures.add(`asset:${id}`);
+    }
     for (const el of queryCandidateOutputs(128)) {
       const sig = getOutputSignature(el);
       if (sig) signatures.add(sig);
@@ -1623,6 +1732,8 @@
     applyFlowParameters,
     captureBaselineOutputSignatures,
     triggerSubmit,
-    waitForFlowCompletion
+    waitForFlowCompletion,
+    waitForFlowReady,
+    waitForOutputsToSettle
   };
 })(window);
