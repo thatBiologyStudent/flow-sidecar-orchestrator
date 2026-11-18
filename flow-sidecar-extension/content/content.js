@@ -18,7 +18,9 @@
     applyFlowParameters,
     captureBaselineOutputSignatures,
     triggerSubmit,
-    waitForFlowCompletion
+    waitForFlowCompletion,
+    waitForFlowReady,
+    waitForOutputsToSettle
   } = globalScope.FlowDomActions;
 
   let isStepInProgress = false;
@@ -60,6 +62,9 @@
     try {
       const expectedCount = Math.min(4, Math.max(1, Math.round(Number(payload.imagesPerPrompt) || 1)));
 
+      // 0. Never start while Flow is still finishing an earlier generation
+      await waitForFlowReady({ timeoutMs: 90000, requireIdle: true });
+
       // 1. Apply aspect ratio, target Flow model, and images-per-prompt count inside Agent settings (then click Save to return)
       await applyFlowParameters({
         aspectRatio: payload.aspectRatio,
@@ -74,15 +79,20 @@
       }
       await attachReferenceImages(references);
 
-      // 3. Inject prompt text
+      // 3. Inject prompt text (the prompt box can re-mount after references are attached)
+      await waitForFlowReady({ timeoutMs: 10000, requireIdle: false });
       const promptEl = injectPromptText(promptText);
 
       // Brief pause to allow reactive UI state to enable the submit button
       await new Promise((r) => setTimeout(r, 250));
 
       // 4. Snapshot outputs now, AFTER references were uploaded (uploads also appear in the media grid
-      //    and must not be mistaken for generated images)
-      const baselineSignatures = captureBaselineOutputSignatures();
+      //    and must not be mistaken for generated images). Let the grid settle first so a freshly
+      //    uploaded reference is already in it, and exclude every reference asset explicitly.
+      if (references.length) await waitForOutputsToSettle();
+      const baselineSignatures = captureBaselineOutputSignatures(
+        references.map((r) => r && r.assetId).filter(Boolean)
+      );
 
       // 5. Click Submit / Generate (`→`) inside the composer
       await triggerSubmit(promptEl);
