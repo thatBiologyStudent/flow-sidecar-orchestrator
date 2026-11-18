@@ -17,3 +17,6 @@ desktop.ini
 
 # Local notes (kept on disk, not published)
 docs/
+
+# Instructions for the Alembic integration agent (local only)
+ALEMBIC_INTEGRATION.md

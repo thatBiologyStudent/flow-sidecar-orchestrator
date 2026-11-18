@@ -178,6 +178,15 @@
         </div>
 
         <div class="field-group full-width">
+          <label class="checkbox-row" for="alembicBridgeCheckbox" title="Lets Alembic Generative Studio (localhost:5178 or thatbio.vercel.app) generate images through your open Flow project, using your Flow credits">
+            <input id="alembicBridgeCheckbox" type="checkbox" />
+            <span>Allow Alembic to control Flow (uses your Flow credits)</span>
+          </label>
+          <span class="field-hint">Saved immediately. Alembic's requests show up in the chat below.</span>
+          <a class="field-hint field-link" href="https://github.com/thatBiologyStudent/alembic-generative-studio" target="_blank" rel="noopener noreferrer">What is Alembic? Open the Alembic Generative Studio repository ↗</a>
+        </div>
+
+        <div class="field-group full-width">
           <label for="pacingDelayInput">Pacing Delay Between Queue Steps (sec)</label>
           <input id="pacingDelayInput" type="number" min="1" step="0.5" value="2" />
         </div>
@@ -226,9 +235,16 @@
             <button id="attachImageBtn" type="button" class="btn btn-icon" title="Attach Reference Images (PNG/JPG/WEBP)">
               📎 Attach
             </button>
+            <button id="pickFromFlowBtn" type="button" class="btn btn-icon" title="Pick images from the open Flow project as references">
+              🌊 From Flow
+            </button>
             <button id="sendChatBtn" type="button" class="btn btn-secondary" title="Send standard multimodal chat message">
               Chat
             </button>
+            <label class="checkbox-row compact" for="useRefsInFlowCheckbox" title="Attach the images in this message to every generated prompt in Flow (image-to-image). Untick to use them only as inspiration for the text model.">
+              <input id="useRefsInFlowCheckbox" type="checkbox" checked />
+              <span>Use images in Flow</span>
+            </label>
           </div>
           <div class="composer-right">
             <label for="promptCountSelect" class="sr-only">Number of prompts</label>
@@ -297,6 +313,24 @@
       <div class="modal-body">
         <img id="modalImage" src="" alt="Full resolution preview" />
         <p id="modalPromptText" class="modal-prompt"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flow project gallery: pick existing Flow images as image-to-image references -->
+  <div id="flowGalleryModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="flowGalleryTitle">
+    <div class="modal-card gallery-card">
+      <div class="modal-header">
+        <span id="flowGalleryTitle" class="modal-title">🌊 Images in this Flow project</span>
+        <button id="closeFlowGalleryBtn" type="button" class="banner-close-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="gallery-body">
+        <p id="flowGalleryStatus" class="field-hint">Loading images from the Flow tab…</p>
+        <div id="flowGalleryGrid" class="gallery-grid"></div>
+      </div>
+      <div class="gallery-footer">
+        <button id="refreshFlowGalleryBtn" type="button" class="btn btn-secondary btn-xs">⟳ Refresh</button>
+        <button id="addFlowGalleryBtn" type="button" class="btn btn-accent" disabled>Add selected</button>
       </div>
     </div>
   </div>

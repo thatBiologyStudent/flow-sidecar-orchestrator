@@ -15,8 +15,9 @@ A Chrome / Brave extension that puts an AI prompt assistant and a batch queue in
 | **Execution queue** | ▶ Start / ⏸ Pause / 🗑 Clear. Items run one by one with a configurable pause between them; each row shows its status, settings and result thumbnail. |
 | **Flow automation** | For every item it opens Flow's **Agent settings**, sets the *Image generation default* (aspect ratio, x1–x4 images, model), saves, types the prompt, clicks **Start generation**, and checks that generation really started before it waits. |
 | **Downloads** | Opens each new image and uses Flow's own **Download** button, so you get Flow's native file. 1K original size by default, or 2K upscaled with one checkbox. Files can go into a subfolder of Downloads or any folder you pick. |
+| **Alembic bridge** | Optional: lets [Alembic Generative Studio](https://github.com/thatBiologyStudent/alembic-generative-studio) (on `localhost:5178` or `thatbio.vercel.app`) generate and edit images through your open Flow project. Off until you tick **Allow Alembic to control Flow** in the side panel. |
 | **Vision critique** | Click **Critique with Vision AI** on a finished queue item to send the image back to the model, which critiques it against the prompt and queues improved variations. |
-| **Img2Img reference** | Attach one reference image that is uploaded into Flow together with every prompt. |
+| **Image-to-image** | Images you attach in the chat are attached to every prompt generated from that message as Flow references (*Use images in Flow*, on by default). **🌊 From Flow** lets you pick any image already in the open Flow project, and **↪ Use as reference** on a finished queue item does the same with the image it generated; both are picked straight from your project instead of being re-uploaded. A global reference image in Settings is added to every prompt. |
 
 Supported Flow image settings (as of November 2026):
 
