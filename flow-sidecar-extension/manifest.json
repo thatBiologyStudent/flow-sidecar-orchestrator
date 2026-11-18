@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flow Sidecar Orchestrator",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Vision-enabled multimodal AI sidecar and automated batch queue orchestrator for Google Labs Flow.",
   "permissions": [
     "sidePanel",

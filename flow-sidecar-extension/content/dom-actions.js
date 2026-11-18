@@ -979,20 +979,37 @@
     let bestDataUrl = null;
     let downloadedViaFlow = false;
 
+    // Preview (Side Panel thumbnail & Vision Critique): fetch the original of exactly this asset.
+    // Reading "the biggest image on screen" after opening the detail view picked unrelated grid
+    // images whenever Flow had not loaded the detail image yet.
+    const gridAssetId = getFlowAssetIdFromSrc(gridSrc);
+    if (gridAssetId && /\/asb\//.test(gridSrc)) {
+      try {
+        const raw = await fetchFlowImageAsDataUrl(gridSrc.replace(/=[^/]*$/, ""), 0);
+        bestDataUrl = /^data:image\/(png|jpeg)/.test(raw) ? raw : await convertDataUrlToJpeg(raw, 0.95);
+      } catch (_) {
+        bestDataUrl = null;
+      }
+    }
+
     try {
       // 1. Open the image detail / lightbox view
       simulateRealClick(gridEl);
       await sleep(800);
 
-      // 2. Capture preview Data URL from the opened full-size <img> (for Side Panel thumbnail & Vision Critique)
-      const allImgs = queryAllDeep("img", document).filter((img) => {
-        if (!(img instanceof HTMLImageElement) || !isElementVisible(img) || !img.complete) {
-          return false;
-        }
-        const area = (img.naturalWidth || 0) * (img.naturalHeight || 0);
-        const src = img.currentSrc || img.src || "";
-        return area > gridArea && src !== gridSrc && (img.naturalWidth || 0) >= 512;
-      });
+      // 2. Fallback preview from the opened full-size <img>, only when the asset fetch failed and
+      //    only from an image showing the same asset
+      const allImgs = bestDataUrl
+        ? []
+        : queryAllDeep("img", document).filter((img) => {
+            if (!(img instanceof HTMLImageElement) || !isElementVisible(img) || !img.complete) {
+              return false;
+            }
+            const area = (img.naturalWidth || 0) * (img.naturalHeight || 0);
+            const src = img.currentSrc || img.src || "";
+            if (gridAssetId && getFlowAssetIdFromSrc(src) !== gridAssetId) return false;
+            return area > gridArea && src !== gridSrc && (img.naturalWidth || 0) >= 512;
+          });
 
       if (allImgs.length > 0) {
         allImgs.sort(
@@ -1224,7 +1241,16 @@
         for (const id of getReferenceAssetIds()) baselineSignatures.add(`asset:${id}`);
         const readyElements = [];
         const candidates = queryCandidateOutputs(128);
+        const firstOld = findFirstOldOutput(baselineSignatures);
         for (const candidate of candidates) {
+          // Results are listed before all older media; anything rendered after the first old image
+          // is an old image the virtual-scroll grid just rendered again, not a new result
+          if (
+            firstOld &&
+            !(candidate.compareDocumentPosition(firstOld) & Node.DOCUMENT_POSITION_FOLLOWING)
+          ) {
+            continue;
+          }
           if (
             candidate instanceof HTMLImageElement &&
             (!candidate.complete || (candidate.naturalWidth || 0) < 128)
@@ -1296,6 +1322,7 @@
                 allDownloadedViaFlow = false;
               }
             }
+            for (const id of assetIds) if (id) seenAssetIds.add(id);
             resolve({ imageDataUrls: dataUrls, assetIds, downloadedViaFlow: allDownloadedViaFlow });
           } catch (err) {
             reject(err);
@@ -1415,11 +1442,60 @@
     for (const id of [...excludeAssetIds, ...getReferenceAssetIds()]) {
       if (id) signatures.add(`asset:${id}`);
     }
+    // Flow's media grid is virtualized: only the rendered tiles exist in the DOM. Every asset seen
+    // before in this tab (earlier steps, earlier renders) is old, as is every Flow image in the DOM now.
+    rememberRenderedAssets();
+    for (const id of seenAssetIds) signatures.add(`asset:${id}`);
     for (const el of queryCandidateOutputs(128)) {
       const sig = getOutputSignature(el);
       if (sig) signatures.add(sig);
     }
     return signatures;
+  }
+
+  /** Flow asset IDs this tab has already shown (never treated as new results). */
+  const seenAssetIds = new Set();
+
+  /** Records every Flow image currently in the DOM, visible or not. */
+  function rememberRenderedAssets() {
+    for (const img of queryAllDeep('img[src*="/asb/"]', document)) {
+      const id = getFlowAssetIdFromSrc(img.currentSrc || img.src || "");
+      if (id) seenAssetIds.add(id);
+    }
+  }
+
+  /**
+   * Scrolls Flow's virtual-scroll media grid to the top, where Flow inserts new results, so they get
+   * rendered and the baseline covers the tiles they will be compared against.
+   */
+  async function scrollMediaGridToTop() {
+    const scrollers = queryAllDeep(".cdk-virtual-scrollable, cdk-virtual-scroll-viewport", document).filter(
+      (el) => el.scrollTop > 0 && el.querySelector('img[src*="/asb/"]')
+    );
+    if (!scrollers.length) return;
+    for (const scroller of scrollers) {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event("scroll"));
+    }
+    await sleep(600);
+  }
+
+  /**
+   * The first (top-most) old image currently rendered in the grid. Flow lists the newest media first,
+   * so a real result is always rendered before it; an old image that only re-entered the virtual
+   * scroller's rendered range comes after it.
+   * @param {Set<string>} baselineSignatures
+   * @returns {Element|null}
+   */
+  function findFirstOldOutput(baselineSignatures) {
+    let first = null;
+    for (const el of queryCandidateOutputs(128)) {
+      if (el.closest(REFERENCE_CONTAINERS)) continue;
+      const sig = getOutputSignature(el);
+      if (!sig || !baselineSignatures.has(sig)) continue;
+      if (!first || el.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING) first = el;
+    }
+    return first;
   }
 
   /**
@@ -1734,6 +1810,7 @@
     triggerSubmit,
     waitForFlowCompletion,
     waitForFlowReady,
-    waitForOutputsToSettle
+    waitForOutputsToSettle,
+    scrollMediaGridToTop
   };
 })(window);
