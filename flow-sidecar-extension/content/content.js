@@ -20,7 +20,8 @@
     triggerSubmit,
     waitForFlowCompletion,
     waitForFlowReady,
-    waitForOutputsToSettle
+    waitForOutputsToSettle,
+    scrollMediaGridToTop
   } = globalScope.FlowDomActions;
 
   let isStepInProgress = false;
@@ -89,7 +90,10 @@
       // 4. Snapshot outputs now, AFTER references were uploaded (uploads also appear in the media grid
       //    and must not be mistaken for generated images). Let the grid settle first so a freshly
       //    uploaded reference is already in it, and exclude every reference asset explicitly.
-      if (references.length) await waitForOutputsToSettle();
+      //    Flow lists new media at the top of a virtual-scroll grid: scroll there first so the results
+      //    get rendered and the baseline holds the tiles they will appear in front of.
+      await scrollMediaGridToTop();
+      await waitForOutputsToSettle(references.length ? 1500 : 600, references.length ? 10000 : 3000);
       const baselineSignatures = captureBaselineOutputSignatures(
         references.map((r) => r && r.assetId).filter(Boolean)
       );
