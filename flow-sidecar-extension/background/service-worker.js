@@ -447,3 +447,267 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+/* ==========================================================================
+   Alembic bridge
+   Lets Alembic Generative Studio (a separate web app) drive Google Flow through
+   this extension. The page talks to `bridge/alembic-bridge.js`, which opens a
+   port named "flow-sidecar-bridge" per request. Off until the user ticks
+   "Allow Alembic to control Flow" in the side panel.
+   Protocol documentation: ALEMBIC_INTEGRATION.md in the repository root.
+   ========================================================================== */
+
+const BRIDGE_PROTOCOL = 1;
+const BRIDGE_SETTINGS_KEY = "flow_sidecar_bridge_v1";
+const SIDEPANEL_CONFIG_KEY = "flow_sidecar_config_v1";
+const BRIDGE_FLOW_MODELS = ["Nano Banana 2.1", "Nano Banana Pro", "Nano Banana 2 Lite"];
+const BRIDGE_ASPECT_RATIOS = ["16:9", "4:3", "1:1", "3:4", "9:16"];
+const BRIDGE_MAX_REFERENCES = 8;
+
+/** One Flow generation at a time across all Alembic tabs */
+let bridgeBusy = false;
+
+class BridgeError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+async function getBridgeSettings() {
+  const stored = await chrome.storage.local.get(BRIDGE_SETTINGS_KEY);
+  const s = stored[BRIDGE_SETTINGS_KEY] || {};
+  return { enabled: Boolean(s.enabled) };
+}
+
+/** Tells the side panel (if open) what Alembic is doing. */
+function notifyBridgeActivity(text, level = "info") {
+  chrome.runtime.sendMessage({ type: "BRIDGE_ACTIVITY", text, level }).catch(() => {});
+}
+
+/** Finds a Flow tab, preferring one that has a project open. */
+async function findFlowTabInfo() {
+  const tabs = await chrome.tabs.query({
+    url: ["*://flow.google.com/*", "*://*.flow.google.com/*", "*://labs.google/*", "*://*.labs.google/*"]
+  });
+  const withProject = tabs.find((t) => /\/project\//.test(t.url || ""));
+  const tab = withProject || tabs[0] || null;
+  return tab
+    ? { open: true, tabId: tab.id, url: tab.url || "", hasProject: Boolean(withProject), title: tab.title || "" }
+    : { open: false, tabId: null, url: "", hasProject: false, title: "" };
+}
+
+async function sendToFlowContent(tabInfo, message) {
+  const tabId = await ensureFlowTabReady(tabInfo.tabId);
+  const response = await chrome.tabs.sendMessage(tabId, message);
+  if (!response || !response.ok) {
+    throw new BridgeError("FLOW_ERROR", response?.error || "Flow did not respond.");
+  }
+  return response;
+}
+
+function normalizeBridgeAspect(value) {
+  const v = String(value || "").replace(/\s+/g, "");
+  return BRIDGE_ASPECT_RATIOS.includes(v) ? v : null;
+}
+
+function normalizeBridgeModel(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return BRIDGE_FLOW_MODELS.find((m) => m.toLowerCase() === v) || null;
+}
+
+/**
+ * Validates and sanitises reference images from the page.
+ * @returns {Array<{dataUrl?: string, assetId?: string, name: string}>}
+ */
+function normalizeBridgeReferences(refs) {
+  if (!Array.isArray(refs)) return [];
+  if (refs.length > BRIDGE_MAX_REFERENCES) {
+    throw new BridgeError("BAD_REQUEST", `At most ${BRIDGE_MAX_REFERENCES} reference images are supported.`);
+  }
+  return refs.map((r, i) => {
+    const name =
+      typeof r?.name === "string" && r.name.trim() ? r.name.trim().slice(0, 80) : `Alembic reference ${i + 1}`;
+    const hasDataUrl = typeof r?.dataUrl === "string" && /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(r.dataUrl);
+    if (typeof r?.assetId === "string" && /^[A-Za-z0-9_-]+$/.test(r.assetId)) {
+      // A Flow image: picked from the project; the data URL (if given) is only an upload fallback
+      return { assetId: r.assetId, name, ...(hasDataUrl ? { dataUrl: r.dataUrl } : {}) };
+    }
+    if (hasDataUrl) {
+      return { dataUrl: r.dataUrl, name };
+    }
+    throw new BridgeError("BAD_REQUEST", `Reference ${i + 1} needs a base64 image data URL or a Flow assetId.`);
+  });
+}
+
+/**
+ * Handles one bridge action.
+ * @param {string} action
+ * @param {object} params
+ * @param {(stage: string, detail?: any) => void} progress
+ */
+async function handleBridgeAction(action, params, progress) {
+  const settings = await getBridgeSettings();
+
+  if (action === "hello" || action === "status") {
+    const flow = await findFlowTabInfo();
+    return {
+      protocol: BRIDGE_PROTOCOL,
+      version: chrome.runtime.getManifest().version,
+      enabled: settings.enabled,
+      busy: bridgeBusy,
+      flow: { open: flow.open, hasProject: flow.hasProject, url: flow.url, title: flow.title },
+      capabilities: {
+        models: BRIDGE_FLOW_MODELS,
+        defaultModel: BRIDGE_FLOW_MODELS[0],
+        aspectRatios: BRIDGE_ASPECT_RATIOS,
+        maxImagesPerRequest: 4,
+        maxReferences: BRIDGE_MAX_REFERENCES,
+        img2img: true,
+        inpaint: false,
+        negativePrompt: false,
+        seed: false,
+        outputResolution: "1k"
+      }
+    };
+  }
+
+  if (!settings.enabled) {
+    throw new BridgeError(
+      "DISABLED",
+      'Flow Sidecar is not allowing Alembic to control Flow. Open the Flow Sidecar side panel and tick "Allow Alembic to control Flow".'
+    );
+  }
+
+  const flow = await findFlowTabInfo();
+  if (!flow.open) {
+    throw new BridgeError("NO_FLOW_TAB", "No Google Flow tab is open. Open https://flow.google.com and a project.");
+  }
+  if (!flow.hasProject) {
+    throw new BridgeError("NO_FLOW_PROJECT", "Google Flow is open but no project is. Open a project in the Flow tab.");
+  }
+
+  if (action === "listImages") {
+    const limit = Math.max(1, Math.min(200, Math.round(Number(params.limit) || 80)));
+    const res = await sendToFlowContent(flow, { type: "LIST_FLOW_IMAGES", payload: { limit } });
+    return {
+      images: (res.images || []).map((i) => ({ assetId: i.assetId, name: i.name, thumbDataUrl: i.thumbDataUrl }))
+    };
+  }
+
+  if (action === "getImage") {
+    if (typeof params.assetId !== "string" || !/^[A-Za-z0-9_-]+$/.test(params.assetId)) {
+      throw new BridgeError("BAD_REQUEST", "getImage needs an assetId.");
+    }
+    const size = Number.isFinite(Number(params.size)) ? Math.max(0, Math.round(Number(params.size))) : 0;
+    const res = await sendToFlowContent(flow, {
+      type: "FETCH_FLOW_IMAGE",
+      payload: { assetId: params.assetId, size }
+    });
+    return { assetId: params.assetId, dataUrl: res.dataUrl };
+  }
+
+  if (action === "generate") {
+    const prompt = typeof params.prompt === "string" ? params.prompt.trim() : "";
+    if (!prompt) throw new BridgeError("BAD_REQUEST", "generate needs a prompt.");
+    if (prompt.length > 8000) throw new BridgeError("BAD_REQUEST", "The prompt is too long (max 8000 characters).");
+    const aspectRatio = params.aspectRatio == null ? null : normalizeBridgeAspect(params.aspectRatio);
+    if (params.aspectRatio != null && !aspectRatio) {
+      throw new BridgeError("BAD_REQUEST", `aspectRatio must be one of ${BRIDGE_ASPECT_RATIOS.join(", ")}.`);
+    }
+    const model = params.model == null ? null : normalizeBridgeModel(params.model);
+    if (params.model != null && !model) {
+      throw new BridgeError("BAD_REQUEST", `model must be one of ${BRIDGE_FLOW_MODELS.join(", ")}.`);
+    }
+    const count = Math.max(1, Math.min(4, Math.round(Number(params.count) || 1)));
+    const references = normalizeBridgeReferences(params.references);
+    const download = Boolean(params.download);
+
+    if (bridgeBusy) {
+      throw new BridgeError("BUSY", "Flow is already generating for Alembic. Wait for it to finish.");
+    }
+    bridgeBusy = true;
+    try {
+      const stored = await chrome.storage.local.get(SIDEPANEL_CONFIG_KEY);
+      const cfg = stored[SIDEPANEL_CONFIG_KEY] || {};
+      const useRatio = aspectRatio || cfg.aspectRatio || "1:1";
+      const useModel = model || cfg.targetFlowModel || BRIDGE_FLOW_MODELS[0];
+      if (download) {
+        await setFlowDownloadRoute({ subfolder: cfg.downloadSubfolder || "", useDirectFolder: false });
+      }
+
+      notifyBridgeActivity(
+        `Alembic → Flow: ${count}× ${useRatio} · ${useModel}` +
+          `${references.length ? ` · ${references.length} reference(s)` : ""}: "${prompt.slice(0, 80)}${prompt.length > 80 ? "…" : ""}"`
+      );
+      progress("submitting", { count, references: references.length });
+
+      const tabId = await ensureFlowTabReady(flow.tabId);
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: "EXECUTE_FLOW_PROMPT",
+        payload: {
+          prompt,
+          aspectRatio: useRatio,
+          targetModel: useModel,
+          imagesPerPrompt: count,
+          references,
+          skipFlowDownload: !download,
+          upscaleDownload: download && Boolean(cfg.upscaleDownload)
+        }
+      });
+      if (!response || !response.ok) {
+        const msg = response?.error || "Flow did not return any image.";
+        throw new BridgeError(/already running/i.test(msg) ? "BUSY" : "FLOW_ERROR", msg);
+      }
+
+      const urls = Array.isArray(response.imageDataUrls) ? response.imageDataUrls : [];
+      const ids = Array.isArray(response.assetIds) ? response.assetIds : [];
+      notifyBridgeActivity(`Alembic ← Flow: ${urls.length} image(s) returned.`);
+      return {
+        images: urls.map((dataUrl, i) => ({ dataUrl, assetId: ids[i] || null })),
+        model: useModel,
+        aspectRatio: useRatio,
+        downloaded: Boolean(response.downloadedViaFlow)
+      };
+    } finally {
+      bridgeBusy = false;
+    }
+  }
+
+  throw new BridgeError("UNKNOWN_ACTION", `Unknown action "${action}".`);
+}
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "flow-sidecar-bridge") return;
+  // Only our own bridge content script (running in an Alembic tab) may connect
+  if (!port.sender || port.sender.id !== chrome.runtime.id || !port.sender.tab) {
+    port.disconnect();
+    return;
+  }
+
+  let closed = false;
+  port.onDisconnect.addListener(() => {
+    closed = true;
+  });
+  const send = (msg) => {
+    if (closed) return;
+    try {
+      port.postMessage(msg);
+    } catch (_) {
+      closed = true;
+    }
+  };
+
+  port.onMessage.addListener((msg) => {
+    if (!msg || msg.type !== "request" || typeof msg.id !== "string") return; // keepalive pings
+    const { id, action } = msg;
+    const params = msg.params && typeof msg.params === "object" ? msg.params : {};
+    handleBridgeAction(action, params, (stage, detail) => send({ type: "event", id, event: "progress", stage, detail }))
+      .then((result) => send({ type: "response", id, ok: true, result }))
+      .catch((err) => {
+        const code = err instanceof BridgeError ? err.code : "INTERNAL";
+        if (action === "generate") notifyBridgeActivity(`Alembic request failed: ${err.message || String(err)}`, "error");
+        send({ type: "response", id, ok: false, code, error: err.message || String(err) });
+      });
+  });
+});

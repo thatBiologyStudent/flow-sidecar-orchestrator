@@ -47,6 +47,7 @@ const state = {
     downloadSubfolder: "",
     saveAsDialog: false,
     upscaleDownload: false,
+    useRefsInFlow: true,
     pacingDelay: 2
   },
   directoryHandle: null, // FileSystemDirectoryHandle chosen via Windows Explorer
@@ -95,6 +96,15 @@ const dom = {
   downloadSubfolderInput: document.getElementById("downloadSubfolderInput"),
   saveAsDialogCheckbox: document.getElementById("saveAsDialogCheckbox"),
   upscaleDownloadCheckbox: document.getElementById("upscaleDownloadCheckbox"),
+  useRefsInFlowCheckbox: document.getElementById("useRefsInFlowCheckbox"),
+  alembicBridgeCheckbox: document.getElementById("alembicBridgeCheckbox"),
+  pickFromFlowBtn: document.getElementById("pickFromFlowBtn"),
+  flowGalleryModal: document.getElementById("flowGalleryModal"),
+  flowGalleryGrid: document.getElementById("flowGalleryGrid"),
+  flowGalleryStatus: document.getElementById("flowGalleryStatus"),
+  closeFlowGalleryBtn: document.getElementById("closeFlowGalleryBtn"),
+  refreshFlowGalleryBtn: document.getElementById("refreshFlowGalleryBtn"),
+  addFlowGalleryBtn: document.getElementById("addFlowGalleryBtn"),
   braveFsHint: document.getElementById("braveFsHint"),
   pacingDelayInput: document.getElementById("pacingDelayInput"),
 
@@ -174,6 +184,9 @@ function renderConfigToForm() {
   }
   if (dom.upscaleDownloadCheckbox) {
     dom.upscaleDownloadCheckbox.checked = Boolean(state.config.upscaleDownload);
+  }
+  if (dom.useRefsInFlowCheckbox) {
+    dom.useRefsInFlowCheckbox.checked = state.config.useRefsInFlow !== false;
   }
   dom.pacingDelayInput.value = String(state.config.pacingDelay ?? 2);
 
@@ -393,6 +406,7 @@ async function loadConfigFromStorage() {
         state.config.downloadSubfolder = typeof saved.downloadSubfolder === "string" ? saved.downloadSubfolder : "";
         state.config.saveAsDialog = Boolean(saved.saveAsDialog);
         state.config.upscaleDownload = Boolean(saved.upscaleDownload);
+        state.config.useRefsInFlow = saved.useRefsInFlow !== false;
         state.config.pacingDelay =
           typeof saved.pacingDelay === "number" && saved.pacingDelay >= 1 ? saved.pacingDelay : 2;
         state.fetchedModels = Array.isArray(saved.fetchedModels) ? saved.fetchedModels : [];
@@ -542,7 +556,12 @@ function renderChatAttachmentStrip() {
     thumb.alt = item.name;
 
     const label = document.createElement("span");
-    label.textContent = `${item.name.slice(0, 14)} (${item.width}×${item.height})`;
+    label.textContent = item.assetId
+      ? `🌊 ${item.name.slice(0, 16)}`
+      : `${item.name.slice(0, 14)} (${item.width}×${item.height})`;
+    if (item.assetId) {
+      chip.title = "Generated in Flow: picked from the project instead of re-uploading";
+    }
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
@@ -583,10 +602,189 @@ async function handleAttachFiles(files) {
   renderChatAttachmentStrip();
 }
 
+/**
+ * Adds the generated image(s) of a finished queue item to the chat attachments, so the next
+ * prompts use them as image-to-image references. Flow's asset IDs are kept so the content
+ * script can pick the exact image from the project instead of uploading a copy.
+ * @param {object} item queue item
+ */
+async function handleUseResultAsReference(item) {
+  const urls = item.resultDataUrls && item.resultDataUrls.length ? item.resultDataUrls : [item.resultDataUrl];
+  let added = 0;
+  for (const [index, url] of urls.entries()) {
+    if (!url) continue;
+    const assetId = (item.resultAssetIds && item.resultAssetIds[index]) || null;
+    if (assetId && state.chatAttachments.some((a) => a.assetId === assetId)) continue;
+    try {
+      // Small copy for the text model and as upload fallback; Flow uses the original via assetId
+      const small = await downscaleImage(url, { maxDimension: 1024 });
+      state.chatAttachments.push({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name: `Flow result ${urls.length > 1 ? `${index + 1}/${urls.length}` : ""}`.trim(),
+        dataUrl: small.dataUrl,
+        width: small.width,
+        height: small.height,
+        assetId
+      });
+      added++;
+    } catch (err) {
+      appendChatMessage("system", `Could not use the result as a reference: ${err.message || String(err)}`);
+    }
+  }
+  renderChatAttachmentStrip();
+  if (added > 0) {
+    appendChatMessage(
+      "system",
+      `Added ${added} generated image(s) as reference. Describe the change you want and click ✨ Generate Prompts.`
+    );
+    dom.chatInputTextarea.focus();
+  }
+}
+
+/* ---- Flow project gallery: pick existing Flow images as references ---- */
+
+const flowGallery = {
+  images: [], // { assetId, name, baseUrl, thumbDataUrl }
+  selected: new Set()
+};
+
+/**
+ * Sends a message to the content script in the Flow tab (via the service worker).
+ * @param {object} payload e.g. { type: "LIST_FLOW_IMAGES" }
+ */
+function sendToFlowTab(payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "DISPATCH_TO_FLOW_TAB", payload }, (bgResp) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (!bgResp || !bgResp.ok) return reject(new Error(bgResp?.error || "Could not reach the Flow tab."));
+      const resp = bgResp.response;
+      if (!resp || !resp.ok) return reject(new Error(resp?.error || "The Flow tab did not answer."));
+      resolve(resp);
+    });
+  });
+}
+
+function updateFlowGalleryAddButton() {
+  const n = flowGallery.selected.size;
+  dom.addFlowGalleryBtn.disabled = n === 0;
+  dom.addFlowGalleryBtn.textContent = n > 0 ? `Add ${n} as reference${n > 1 ? "s" : ""}` : "Add selected";
+}
+
+function renderFlowGallery() {
+  dom.flowGalleryGrid.innerHTML = "";
+  const attachedIds = new Set(state.chatAttachments.map((a) => a.assetId).filter(Boolean));
+  for (const image of flowGallery.images) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `gallery-item${flowGallery.selected.has(image.assetId) ? " selected" : ""}`;
+    btn.title = attachedIds.has(image.assetId) ? `${image.name} (already attached)` : image.name;
+    btn.setAttribute("aria-pressed", String(flowGallery.selected.has(image.assetId)));
+
+    if (image.thumbDataUrl) {
+      const img = document.createElement("img");
+      img.src = image.thumbDataUrl;
+      img.alt = image.name;
+      btn.appendChild(img);
+    }
+    const name = document.createElement("span");
+    name.className = "gallery-name";
+    name.textContent = attachedIds.has(image.assetId) ? `✓ ${image.name}` : image.name;
+    btn.appendChild(name);
+
+    btn.addEventListener("click", () => {
+      if (flowGallery.selected.has(image.assetId)) flowGallery.selected.delete(image.assetId);
+      else flowGallery.selected.add(image.assetId);
+      btn.classList.toggle("selected");
+      btn.setAttribute("aria-pressed", String(flowGallery.selected.has(image.assetId)));
+      updateFlowGalleryAddButton();
+    });
+    dom.flowGalleryGrid.appendChild(btn);
+  }
+  updateFlowGalleryAddButton();
+}
+
+async function loadFlowGallery() {
+  if (state.runnerState === "Running" || state.runnerState === "Cooldown") {
+    dom.flowGalleryStatus.textContent = "The queue is running. Pause it or wait until it finishes, then refresh.";
+    return;
+  }
+  dom.flowGalleryStatus.textContent = "Loading images from the Flow tab…";
+  dom.refreshFlowGalleryBtn.disabled = true;
+  try {
+    const { images } = await sendToFlowTab({ type: "LIST_FLOW_IMAGES", payload: { limit: 80 } });
+    flowGallery.images = Array.isArray(images) ? images : [];
+    flowGallery.selected = new Set(
+      [...flowGallery.selected].filter((id) => flowGallery.images.some((i) => i.assetId === id))
+    );
+    dom.flowGalleryStatus.textContent = flowGallery.images.length
+      ? `${flowGallery.images.length} image(s), newest first. Click to select, then add them as references.`
+      : "No images found in this Flow project.";
+    renderFlowGallery();
+  } catch (err) {
+    dom.flowGalleryStatus.textContent = `Could not load images: ${err.message || String(err)}`;
+  } finally {
+    dom.refreshFlowGalleryBtn.disabled = false;
+  }
+}
+
+function openFlowGallery() {
+  dom.flowGalleryModal.classList.remove("hidden");
+  if (flowGallery.images.length === 0) {
+    loadFlowGallery();
+  } else {
+    renderFlowGallery();
+  }
+}
+
+function closeFlowGallery() {
+  dom.flowGalleryModal.classList.add("hidden");
+}
+
+async function addSelectedFlowImages() {
+  const chosen = flowGallery.images.filter((i) => flowGallery.selected.has(i.assetId));
+  if (chosen.length === 0) return;
+  dom.addFlowGalleryBtn.disabled = true;
+  dom.flowGalleryStatus.textContent = `Adding ${chosen.length} image(s)…`;
+  let added = 0;
+  for (const image of chosen) {
+    if (state.chatAttachments.some((a) => a.assetId === image.assetId)) continue;
+    try {
+      // 1024 px copy for the text model (and as upload fallback); Flow itself uses the original via assetId
+      const { dataUrl } = await sendToFlowTab({
+        type: "FETCH_FLOW_IMAGE",
+        payload: { baseUrl: image.baseUrl, size: 1024 }
+      });
+      const small = await downscaleImage(dataUrl, { maxDimension: 1024 });
+      state.chatAttachments.push({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name: image.name,
+        dataUrl: small.dataUrl,
+        width: small.width,
+        height: small.height,
+        assetId: image.assetId
+      });
+      added++;
+    } catch (err) {
+      appendChatMessage("system", `Could not add "${image.name}": ${err.message || String(err)}`);
+    }
+  }
+  flowGallery.selected.clear();
+  renderChatAttachmentStrip();
+  closeFlowGallery();
+  if (added > 0) {
+    appendChatMessage(
+      "system",
+      `Added ${added} Flow image(s) as reference. Describe what you want and click ✨ Generate Prompts.`
+    );
+    dom.chatInputTextarea.focus();
+  }
+}
+
 function setComposerBusy(isBusy) {
   dom.sendChatBtn.disabled = isBusy;
   dom.generatePromptsBtn.disabled = isBusy;
   dom.attachImageBtn.disabled = isBusy;
+  if (dom.pickFromFlowBtn) dom.pickFromFlowBtn.disabled = isBusy;
   dom.chatInputTextarea.disabled = isBusy;
 }
 
@@ -719,6 +917,11 @@ async function handleGeneratePrompts() {
 
   const userText = dom.chatInputTextarea.value.trim();
   const attachedImages = state.chatAttachments.map((a) => a.dataUrl);
+  // Images attached to this message become Flow image-to-image references for every new prompt
+  const flowReferences =
+    state.config.useRefsInFlow !== false
+      ? state.chatAttachments.map((a) => ({ dataUrl: a.dataUrl, name: a.name, assetId: a.assetId || null }))
+      : [];
 
   if (!userText && attachedImages.length === 0) {
     appendChatMessage(
@@ -769,8 +972,15 @@ async function handleGeneratePrompts() {
       defaultAspectRatio: baselineRatio,
       defaultFlowModel: baselineModel,
       defaultImagesPerPrompt: baselineImagesPerPrompt,
-      fallbackOverrides: effectiveOverrides
+      fallbackOverrides: effectiveOverrides,
+      references: flowReferences
     });
+    if (flowReferences.length > 0) {
+      appendChatMessage(
+        "system",
+        `🖼 Each new prompt will use ${flowReferences.length} reference image(s) in Flow (image-to-image).`
+      );
+    }
 
     const summary = `Expanded ${prompts.length} prompt(s) and added to Execution Queue:\n${prompts
       .map((p, idx) => {
@@ -850,9 +1060,11 @@ function enqueuePrompts(prompts, context = {}) {
       targetFlowModel: itemModel,
       imagesPerPrompt: itemImagesPerPrompt,
       isOverridden,
+      references: Array.isArray(context.references) ? context.references : [],
       status: "pending",
       resultDataUrl: null,
       resultDataUrls: [],
+      resultAssetIds: [],
       error: null
     });
   }
@@ -909,6 +1121,13 @@ function renderQueueTable() {
     countBadge.textContent = `×${item.imagesPerPrompt || state.config.imagesPerPrompt || 1}`;
 
     badgeRow.append(ratioBadge, modelBadge, countBadge);
+    if (item.references && item.references.length > 0) {
+      const refBadge = document.createElement("span");
+      refBadge.className = "param-badge overridden";
+      refBadge.textContent = `🖼 ${item.references.length} ref`;
+      refBadge.title = `Image-to-image with: ${item.references.map((r) => r.name || "image").join(", ")}`;
+      badgeRow.appendChild(refBadge);
+    }
     tdPrompt.appendChild(badgeRow);
 
     if (item.error) {
@@ -951,6 +1170,15 @@ function renderQueueTable() {
     critiqueBtn.disabled = !item.resultDataUrl;
     critiqueBtn.addEventListener("click", () => handleCritiqueQueueItem(item));
     tdAction.appendChild(critiqueBtn);
+
+    const useRefBtn = document.createElement("button");
+    useRefBtn.type = "button";
+    useRefBtn.className = "critique-btn";
+    useRefBtn.textContent = "↪ Use as reference";
+    useRefBtn.title = "Attach this generated image to the chat so new prompts edit it in Flow (image-to-image)";
+    useRefBtn.disabled = !item.resultDataUrl;
+    useRefBtn.addEventListener("click", () => handleUseResultAsReference(item));
+    tdAction.appendChild(useRefBtn);
 
     tr.append(tdPrompt, tdStatus, tdThumb, tdAction);
     dom.queueTableBody.appendChild(tr);
@@ -1013,6 +1241,7 @@ function executeFlowStepInTab(item) {
             aspectRatio: item.aspectRatio || state.config.aspectRatio,
             targetModel: item.targetFlowModel || state.config.targetFlowModel,
             imagesPerPrompt: item.imagesPerPrompt || state.config.imagesPerPrompt || 1,
+            references: Array.isArray(item.references) ? item.references : [],
             img2imgDataUrl: state.config.img2imgDataUrl || null,
             img2imgName: state.config.img2imgName || "reference.png",
             upscaleDownload: Boolean(state.config.upscaleDownload)
@@ -1047,6 +1276,7 @@ function executeFlowStepInTab(item) {
         resolve({
           imageDataUrl: imageDataUrls[0],
           imageDataUrls,
+          assetIds: Array.isArray(tabResp.assetIds) ? tabResp.assetIds : [],
           downloadedViaFlow: Boolean(tabResp.downloadedViaFlow)
         });
       }
@@ -1136,10 +1366,11 @@ async function runQueueLoop() {
       renderQueueTable();
 
       try {
-        const { imageDataUrl, imageDataUrls, downloadedViaFlow } = await executeFlowStepInTab(nextItem);
+        const { imageDataUrl, imageDataUrls, assetIds, downloadedViaFlow } = await executeFlowStepInTab(nextItem);
         nextItem.status = "success";
         nextItem.resultDataUrl = imageDataUrl;
         nextItem.resultDataUrls = imageDataUrls;
+        nextItem.resultAssetIds = assetIds;
         renderQueueTable();
 
         // If Flow's own native Download button wasn't triggered, fall back to extension download
@@ -1343,6 +1574,51 @@ function bindEvents() {
   });
   if (dom.clearFolderBtn) {
     dom.clearFolderBtn.addEventListener("click", () => handleClearDownloadFolder());
+  }
+  // Alembic bridge switch: separate storage key, read by the service worker on every request
+  if (dom.alembicBridgeCheckbox) {
+    const BRIDGE_SETTINGS_KEY = "flow_sidecar_bridge_v1";
+    chrome.storage.local.get(BRIDGE_SETTINGS_KEY, (stored) => {
+      dom.alembicBridgeCheckbox.checked = Boolean(stored?.[BRIDGE_SETTINGS_KEY]?.enabled);
+    });
+    dom.alembicBridgeCheckbox.addEventListener("change", () => {
+      const enabled = Boolean(dom.alembicBridgeCheckbox.checked);
+      chrome.storage.local.set({ [BRIDGE_SETTINGS_KEY]: { enabled } });
+      appendChatMessage(
+        "system",
+        enabled
+          ? "Alembic may now generate images through your open Flow project (this uses your Flow credits). Keep a Flow project open, ideally in its own window."
+          : "Alembic can no longer control Flow."
+      );
+    });
+  }
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === "BRIDGE_ACTIVITY" && typeof message.text === "string") {
+      appendChatMessage("system", `🔗 ${message.text}`);
+    }
+    return false;
+  });
+
+  if (dom.pickFromFlowBtn) {
+    dom.pickFromFlowBtn.addEventListener("click", () => openFlowGallery());
+    dom.closeFlowGalleryBtn.addEventListener("click", () => closeFlowGallery());
+    dom.refreshFlowGalleryBtn.addEventListener("click", () => loadFlowGallery());
+    dom.addFlowGalleryBtn.addEventListener("click", () => addSelectedFlowImages());
+    dom.flowGalleryModal.addEventListener("click", (e) => {
+      if (e.target === dom.flowGalleryModal) closeFlowGallery();
+    });
+  }
+  if (dom.useRefsInFlowCheckbox) {
+    dom.useRefsInFlowCheckbox.addEventListener("change", () => {
+      state.config.useRefsInFlow = Boolean(dom.useRefsInFlowCheckbox.checked);
+      // Remember just this toggle right away (it lives in the chat area, not the settings form)
+      chrome.storage.local.get(STORAGE_KEY, (stored) => {
+        const saved = stored?.[STORAGE_KEY];
+        if (saved && typeof saved === "object") {
+          chrome.storage.local.set({ [STORAGE_KEY]: { ...saved, useRefsInFlow: state.config.useRefsInFlow } });
+        }
+      });
+    });
   }
   if (dom.upscaleDownloadCheckbox) {
     dom.upscaleDownloadCheckbox.addEventListener("change", () => {

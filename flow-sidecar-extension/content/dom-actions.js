@@ -12,6 +12,7 @@
     queryAllDeep,
     queryFirstVisible,
     findButtonByMatIcon,
+    findComposerContainer,
     findSubmitButton,
     findComposerSettingsButton,
     queryCandidateOutputs
@@ -156,60 +157,329 @@
     return new File([bytes], filename, { type: mimeType, lastModified: Date.now() });
   }
 
-  /**
-   * 2. Synthetic Img2Img Upload:
-   * Injects an active Img2Img reference image into Flow's `<input type="file">`
-   * or dispatches synthetic `DataTransfer` drag-and-drop events (`dragenter`, `dragover`, `drop`).
+  /* ------------------------------------------------------------------------
+   * 2. Reference images ("ingredients") for Flow's image-to-image
    *
-   * @param {string} img2imgDataUrl
-   * @param {string} [filename="reference.png"]
+   * Verified on Flow (Nov 2026):
+   * - Attached references show as `<flow-image-ingredient-chip>` (button[aria-label="Ingredient"])
+   *   in the prompt box; `aria-busy="true"` while uploading. Clicking a chip removes it.
+   * - Uploading: dragging files over the prompt box (`flow-prompt-box`) switches it into a drop
+   *   zone ("Add reference", `flow-prompt-box-drop-zone-slot`); dropping there uploads the file
+   *   AND attaches it in one go. Synthetic drag events with a DataTransfer are accepted.
+   *   ("Upload media" in the + picker opens the OS file dialog, which we can't fill.)
+   * - Existing project media (e.g. images Flow generated) are picked from the + picker
+   *   (`button[aria-label="Add ingredients to the prompt box"]` → `flow-add-menu-popover-content`):
+   *   click the `button[role="option"]` whose thumbnail URL contains `/asb/<assetId>`, then
+   *   `button.detail-add-to-prompt-btn`. Grid images use the same `/asb/<assetId>` URLs.
+   * ---------------------------------------------------------------------- */
+
+  /** @returns {HTMLElement[]} */
+  function getIngredientChips() {
+    return /** @type {HTMLElement[]} */ (
+      queryAllDeep('flow-image-ingredient-chip button, button.chip-container[aria-label="Ingredient"]')
+    );
+  }
+
+  function areIngredientsUploading() {
+    return getIngredientChips().some((b) => b.getAttribute("aria-busy") === "true");
+  }
+
+  /**
+   * Extracts Flow's media asset ID from an image URL like `https://flow.google.com/asb/<id>=s512-rw`.
+   * @param {string} src
+   * @returns {string|null}
+   */
+  function getFlowAssetIdFromSrc(src) {
+    const match = /\/asb\/([^=?#/]+)/.exec(src || "");
+    return match ? match[1] : null;
+  }
+
+  /**
+   * Waits until the chip count reaches `target` and no chip is still uploading.
    * @returns {Promise<boolean>}
    */
-  async function injectImg2ImgReference(img2imgDataUrl, filename = "reference.png") {
-    if (!img2imgDataUrl) return false;
+  async function waitForIngredientCount(target, timeoutMs = 45000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (getIngredientChips().length >= target && !areIngredientsUploading()) return true;
+      await sleep(250);
+    }
+    return false;
+  }
 
-    const file = dataUrlToFile(img2imgDataUrl, filename);
-    const dataTransfer = new DataTransfer();
-    dataTransfer.items.add(file);
-
-    // Strategy A: Direct <input type="file"> injection
-    for (const selector of FLOW_SELECTORS.img2imgFileInputs) {
-      const fileInput = document.querySelector(selector);
-      if (fileInput instanceof HTMLInputElement && fileInput.type === "file") {
-        const nativeFilesSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype,
-          "files"
-        )?.set;
-        if (nativeFilesSetter) {
-          nativeFilesSetter.call(fileInput, dataTransfer.files);
-        } else {
-          fileInput.files = dataTransfer.files;
-        }
-        fileInput.dispatchEvent(new Event("input", { bubbles: true }));
-        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-        await sleep(350);
-        return true;
+  /** Removes all reference chips currently attached to the prompt box. */
+  async function clearIngredientChips() {
+    for (let attempt = 0; attempt < 3 && getIngredientChips().length > 0; attempt++) {
+      for (const chip of getIngredientChips()) {
+        simulateRealClick(chip);
+        await sleep(200);
       }
+      await sleep(250);
     }
+    if (getIngredientChips().length > 0) {
+      throw new Error("Could not remove the reference images left in Flow's prompt box.");
+    }
+  }
 
-    // Strategy B: Synthetic Drag-and-Drop (`dragenter`, `dragover`, `drop`) onto drop zone or prompt area
-    const dropTarget =
-      queryFirstVisible(FLOW_SELECTORS.img2imgDropZones) ||
-      queryFirstVisible(FLOW_SELECTORS.promptInput) ||
+  /**
+   * Uploads and attaches an image by dropping it onto the prompt box's "Add reference" zone.
+   * @param {string} dataUrl
+   * @param {string} filename
+   * @returns {Promise<boolean>}
+   */
+  async function attachReferenceByDrop(dataUrl, filename) {
+    const before = getIngredientChips().length;
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(dataUrlToFile(dataUrl, filename));
+
+    const fire = (target, type) => {
+      const r = target.getBoundingClientRect();
+      target.dispatchEvent(
+        new DragEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          dataTransfer,
+          clientX: r.left + r.width / 2,
+          clientY: r.top + r.height / 2
+        })
+      );
+    };
+
+    const promptBox =
+      document.querySelector("flow-prompt-box") ||
+      findComposerContainer(queryFirstVisible(FLOW_SELECTORS.promptInput)) ||
       document.body;
+    fire(promptBox, "dragenter");
+    fire(promptBox, "dragover");
 
-    for (const eventType of ["dragenter", "dragover", "drop"]) {
-      const dragEvent = new DragEvent(eventType, {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer
+    let slot = null;
+    for (let i = 0; i < 15 && !slot; i++) {
+      await sleep(100);
+      slot =
+        /** @type {HTMLElement|null} */ (document.querySelector("flow-prompt-box-drop-zone-slot")) ||
+        /** @type {HTMLElement|null} */ (document.querySelector("flow-prompt-box-drop-zone"));
+      if (slot && !isElementVisible(slot)) slot = null;
+    }
+    const target = slot || promptBox;
+    fire(target, "dragenter");
+    fire(target, "dragover");
+    await sleep(80);
+    fire(target, "drop");
+
+    const ok = await waitForIngredientCount(before + 1);
+    if (!ok) {
+      // Make sure Flow leaves its drag overlay
+      fire(target, "dragleave");
+      fire(promptBox, "dragleave");
+      document.dispatchEvent(new DragEvent("dragend", { bubbles: true }));
+    }
+    return ok;
+  }
+
+  /**
+   * Attaches an existing project asset (e.g. a previously generated image) via the + picker.
+   * @param {string} assetId
+   * @returns {Promise<boolean>}
+   */
+  async function attachProjectAsset(assetId) {
+    const before = getIngredientChips().length;
+    const opener = document.querySelector('button[aria-label="Add ingredients to the prompt box"]');
+    if (!(opener instanceof HTMLElement)) return false;
+    simulateRealClick(opener);
+
+    let picker = null;
+    for (let i = 0; i < 20 && !picker; i++) {
+      await sleep(150);
+      picker = document.querySelector("flow-add-menu-popover-content");
+    }
+    if (!picker) return false;
+
+    const closePicker = async () => {
+      if (!document.querySelector("flow-add-menu-popover-content")) return;
+      (document.activeElement || document.body).dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape", code: "Escape" })
+      );
+      await sleep(200);
+      const backdrop = document.querySelector(".cdk-overlay-backdrop");
+      if (backdrop instanceof HTMLElement && isElementVisible(backdrop)) backdrop.click();
+      await sleep(150);
+    };
+
+    // Find the option by asset ID, scrolling the (possibly lazy-loaded) list if needed
+    let option = null;
+    for (let page = 0; page < 12 && !option; page++) {
+      option = Array.from(picker.querySelectorAll('button[role="option"]')).find((o) => {
+        const img = o.querySelector("img");
+        return img && getFlowAssetIdFromSrc(img.currentSrc || img.src) === assetId;
       });
-      dropTarget.dispatchEvent(dragEvent);
-      await sleep(80);
+      if (option) break;
+      const options = picker.querySelectorAll('button[role="option"]');
+      const last = options[options.length - 1];
+      if (!last) break;
+      last.scrollIntoView({ block: "end" });
+      await sleep(350);
+    }
+    if (!option) {
+      await closePicker();
+      return false;
     }
 
+    simulateRealClick(/** @type {HTMLElement} */ (option));
     await sleep(350);
-    return true;
+    const addBtn = picker.querySelector("button.detail-add-to-prompt-btn");
+    if (addBtn instanceof HTMLElement && document.contains(addBtn)) {
+      simulateRealClick(addBtn);
+    }
+    const ok = await waitForIngredientCount(before + 1, 15000);
+    await closePicker();
+    return ok;
+  }
+
+  /** Opens Flow's + asset picker and returns its root element (or null). */
+  async function openAssetPicker() {
+    const existing = document.querySelector("flow-add-menu-popover-content");
+    if (existing) return /** @type {HTMLElement} */ (existing);
+    const opener = document.querySelector('button[aria-label="Add ingredients to the prompt box"]');
+    if (!(opener instanceof HTMLElement)) return null;
+    simulateRealClick(opener);
+    for (let i = 0; i < 20; i++) {
+      await sleep(150);
+      const picker = document.querySelector("flow-add-menu-popover-content");
+      if (picker) return /** @type {HTMLElement} */ (picker);
+    }
+    return null;
+  }
+
+  async function closeAssetPicker() {
+    if (!document.querySelector("flow-add-menu-popover-content")) return;
+    (document.activeElement || document.body).dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, key: "Escape", code: "Escape" })
+    );
+    await sleep(200);
+    const backdrop = document.querySelector(".cdk-overlay-backdrop");
+    if (backdrop instanceof HTMLElement && isElementVisible(backdrop)) backdrop.click();
+    await sleep(150);
+  }
+
+  /**
+   * Fetches a Flow media image (same-origin, uses the page's session) at the given size as a Data URL.
+   * @param {string} baseUrl Image URL without the `=s…` size suffix, e.g. `https://flow.google.com/asb/<id>`
+   * @param {number} size Longest side in pixels
+   */
+  async function fetchFlowImageAsDataUrl(baseUrl, size) {
+    const resp = await fetch(`${baseUrl}=s${size}`, { credentials: "include" });
+    if (!resp.ok) throw new Error(`Flow image request failed (${resp.status}).`);
+    const blob = await resp.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(/** @type {string} */ (reader.result));
+      reader.onerror = () => reject(reader.error || new Error("Could not read Flow image."));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  /**
+   * Lists the images in the current Flow project (generated images and uploads) via the + picker,
+   * with small thumbnails, so the side panel can offer them as references.
+   * @param {{limit?: number}} [options]
+   * @returns {Promise<Array<{assetId: string, name: string, baseUrl: string, thumbDataUrl: string|null}>>}
+   */
+  async function listProjectImages({ limit = 80 } = {}) {
+    const picker = await openAssetPicker();
+    if (!picker) {
+      throw new Error("Could not open Flow's media picker. Open a Flow project and close any open dialogs.");
+    }
+    try {
+      // Make sure the "All" category is shown
+      const allTab = Array.from(picker.querySelectorAll("button")).find((b) =>
+        /^\s*(dashboard\s*)?All\s*$/i.test(b.textContent || "")
+      );
+      if (allTab instanceof HTMLElement) {
+        simulateRealClick(allTab);
+        await sleep(400);
+      }
+
+      /** @type {Map<string, {assetId: string, name: string, baseUrl: string}>} */
+      const found = new Map();
+      let unchangedPages = 0;
+      for (let page = 0; page < 25 && unchangedPages < 2 && found.size < limit; page++) {
+        const before = found.size;
+        for (const option of picker.querySelectorAll('button[role="option"]')) {
+          const img = option.querySelector("img");
+          const src = img ? img.currentSrc || img.src : "";
+          const assetId = getFlowAssetIdFromSrc(src);
+          if (!assetId || found.has(assetId)) continue;
+          // Skip videos / voices (they have a media-type icon on the thumbnail)
+          const icons = Array.from(option.querySelectorAll("mat-icon")).map((i) => (i.textContent || "").trim());
+          if (icons.some((t) => /video|videocam|movie|play_arrow|play_circle|mic|voice|graphic_eq/i.test(t))) continue;
+          const name =
+            (option.querySelector(".asset-title")?.textContent || option.textContent || "Flow image")
+              .replace(/\s+/g, " ")
+              .trim();
+          found.set(assetId, { assetId, name, baseUrl: src.replace(/=[^/]*$/, "") });
+        }
+        unchangedPages = found.size === before ? unchangedPages + 1 : 0;
+        const options = picker.querySelectorAll('button[role="option"]');
+        const last = options[options.length - 1];
+        if (!last) break;
+        last.scrollIntoView({ block: "end" });
+        await sleep(400);
+      }
+
+      // Thumbnails (6 at a time)
+      const items = Array.from(found.values()).slice(0, limit);
+      const results = [];
+      for (let i = 0; i < items.length; i += 6) {
+        const batch = items.slice(i, i + 6);
+        const thumbs = await Promise.all(
+          batch.map((it) => fetchFlowImageAsDataUrl(it.baseUrl, 256).catch(() => null))
+        );
+        batch.forEach((it, idx) => results.push({ ...it, thumbDataUrl: thumbs[idx] }));
+      }
+      return results;
+    } finally {
+      await closeAssetPicker();
+    }
+  }
+
+  /**
+   * Clears old references and attaches the given ones to Flow's prompt box, verifying each.
+   * Each reference is `{dataUrl?, name?, assetId?}`: `assetId` (a Flow project image) is picked
+   * from the + picker; otherwise (or if that fails) `dataUrl` is uploaded by drag-and-drop.
+   *
+   * @param {Array<{dataUrl?: string, name?: string, assetId?: string}>} references
+   * @returns {Promise<number>} number of references attached
+   */
+  async function attachReferenceImages(references = []) {
+    await clearIngredientChips();
+    const refs = (Array.isArray(references) ? references : []).filter((r) => r && (r.assetId || r.dataUrl));
+    let attached = 0;
+
+    for (const [index, ref] of refs.entries()) {
+      const label = ref.name || `reference ${index + 1}`;
+      let ok = false;
+      if (ref.assetId) {
+        ok = await attachProjectAsset(ref.assetId);
+        if (!ok) console.warn(`[FlowSidecar] References: "${label}" not found in the project picker; uploading it instead.`);
+      }
+      if (!ok && ref.dataUrl) {
+        const ext = /^data:image\/(png|jpe?g|webp|gif)/i.exec(ref.dataUrl)?.[1]?.replace("jpeg", "jpg") || "png";
+        ok = await attachReferenceByDrop(ref.dataUrl, `sidecar-ref-${Date.now()}-${index + 1}.${ext}`);
+      }
+      if (!ok) {
+        throw new Error(`Could not attach reference image "${label}" in Flow.`);
+      }
+      attached++;
+      console.debug("[FlowSidecar] References: attached", label, `(${attached}/${refs.length})`);
+    }
+
+    if (getIngredientChips().length !== attached) {
+      throw new Error(
+        `Flow shows ${getIngredientChips().length} reference image(s) but ${attached} were expected.`
+      );
+    }
+    return attached;
   }
 
   /**
@@ -904,7 +1174,7 @@
     baselineSignatures,
     expectedCount = 1,
     timeoutMs = 180000,
-    { upscaleDownload = false } = {}
+    { upscaleDownload = false, skipFlowDownload = false } = {}
   ) {
     const targetCount = Math.min(4, Math.max(1, Math.round(Number(expectedCount) || 1)));
     const startTime = Date.now();
@@ -967,15 +1237,34 @@
           cleanup(observer);
           try {
             const dataUrls = [];
+            const assetIds = [];
             let allDownloadedViaFlow = true;
             for (const el of readyElements.slice(0, targetCount)) {
-              const res = await captureFullResolutionFromCard(el, { upscaleDownload });
+              // Remember Flow's asset ID so the image can later be picked as a reference
+              assetIds.push(
+                el instanceof HTMLImageElement ? getFlowAssetIdFromSrc(el.currentSrc || el.src) : null
+              );
+              const src = el instanceof HTMLImageElement ? el.currentSrc || el.src : "";
+              let res;
+              if (skipFlowDownload && /\/asb\//.test(src)) {
+                // Original image straight from Flow (`=s0`), no detail view and no file download
+                try {
+                  res = {
+                    dataUrl: await fetchFlowImageAsDataUrl(src.replace(/=[^/]*$/, ""), 0),
+                    downloadedViaFlow: false
+                  };
+                } catch (_) {
+                  res = { dataUrl: await convertElementToDataUrl(el), downloadedViaFlow: false };
+                }
+              } else {
+                res = await captureFullResolutionFromCard(el, { upscaleDownload });
+              }
               dataUrls.push(res.dataUrl);
               if (!res.downloadedViaFlow) {
                 allDownloadedViaFlow = false;
               }
             }
-            resolve({ imageDataUrls: dataUrls, downloadedViaFlow: allDownloadedViaFlow });
+            resolve({ imageDataUrls: dataUrls, assetIds, downloadedViaFlow: allDownloadedViaFlow });
           } catch (err) {
             reject(err);
           }
@@ -1328,7 +1617,9 @@
 
   globalScope.FlowDomActions = {
     injectPromptText,
-    injectImg2ImgReference,
+    attachReferenceImages,
+    listProjectImages,
+    fetchFlowImageAsDataUrl,
     applyFlowParameters,
     captureBaselineOutputSignatures,
     triggerSubmit,
