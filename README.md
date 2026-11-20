@@ -157,3 +157,9 @@ cd flow-sidecar-extension && zip -r -X ../dist/flow-sidecar-orchestrator-<versio
 ```
 
 Bump `"version"` in `manifest.json` first. To build a signed `.crx`, use the browser's **Pack extension** button on the extensions page (or `--pack-extension`) and always reuse the same private key (`.pem`) so the extension ID stays the same. Never commit the key.
+
+## License
+
+Copyright © 2026 thatBiologyStudent. Licensed under [Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/).
+
+You may share and adapt this project, also commercially, as long as you give credit (name and a link to this repository), link the license, mark what you changed, and release your changes under the same license. The full text is in [LICENSE](LICENSE).
