@@ -1,6 +1,6 @@
 # Flow Sidecar Orchestrator
 
-A Chrome / Brave extension that puts an AI prompt assistant and a batch queue in the browser's side panel and drives **[Google Flow](https://flow.google.com)** for you: it writes prompts, applies Flow's image settings, starts each generation, waits for the result and downloads it, one queue item after another.
+A Chrome / Brave extension that puts an AI prompt assistant and a batch queue in the browser's side panel and drives [**Google Flow**](https://flow.google.com) for you: it writes prompts, applies Flow's image settings, starts each generation, waits for the result and downloads it, one queue item after another.
 
 > **Unofficial.** This project is not affiliated with, endorsed by, or supported by Google. It automates Flow's web UI in your own browser session, so it can break whenever Flow's interface changes, and every generation uses your own Flow credits. Use it in line with Google's terms of service.
 
@@ -8,22 +8,24 @@ A Chrome / Brave extension that puts an AI prompt assistant and a batch queue in
 
 ## What it does
 
-| | |
-|---|---|
-| **AI prompt assistant** | Chat with any OpenAI-compatible text model in the side panel. Attach reference images and the model describes their style, lighting and composition, then writes detailed image prompts. |
-| **Batch prompt expansion** | Ask for "8 variations of …" and the assistant returns a list of prompts that go straight into the queue. Per-prompt aspect ratio, model and image count can be set by the AI if you allow it. |
-| **Execution queue** | ▶ Start / ⏸ Pause / 🗑 Clear. Items run one by one with a configurable pause between them; each row shows its status, settings and result thumbnail. |
-| **Flow automation** | For every item it opens Flow's **Agent settings**, sets the *Image generation default* (aspect ratio, x1–x4 images, model), saves, types the prompt, clicks **Start generation**, and checks that generation really started before it waits. |
-| **Downloads** | Opens each new image and uses Flow's own **Download** button, so you get Flow's native file. 1K original size by default, or 2K upscaled with one checkbox. Files can go into a subfolder of Downloads or any folder you pick. |
-| **Alembic bridge** | Optional: lets [Alembic Generative Studio](https://github.com/thatBiologyStudent/alembic-generative-studio) (on `localhost:5178` or `thatbio.vercel.app`) generate and edit images through your open Flow project. Off until you tick **Allow Alembic to control Flow** in the side panel. |
-| **Vision critique** | Click **Critique with Vision AI** on a finished queue item to send the image back to the model, which critiques it against the prompt and queues improved variations. |
-| **Image-to-image** | Images you attach in the chat are attached to every prompt generated from that message as Flow references (*Use images in Flow*, on by default). **🌊 From Flow** lets you pick any image already in the open Flow project, and **↪ Use as reference** on a finished queue item does the same with the image it generated; both are picked straight from your project instead of being re-uploaded. A global reference image in Settings is added to every prompt. |
+|                            |                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **AI prompt assistant**    | Chat with any OpenAI-compatible text model in the side panel. Attach reference images and the model describes their style, lighting and composition, then writes detailed image prompts.                                                                                                                                                                                                                                                                           |
+| **Batch prompt expansion** | Ask for "8 variations of …" and the assistant returns a list of prompts that go straight into the queue. Per-prompt aspect ratio, model and image count can be set by the AI if you allow it.                                                                                                                                                                                                                                                                      |
+| **Execution queue**        | ▶ Start / ⏸ Pause / 🗑 Clear. Items run one by one with a configurable pause between them; each row shows its status, settings and result thumbnail.                                                                                                                                                                                                                                                                                                               |
+| **Flow automation**        | For every item it opens the settings popup from the button in Flow's prompt box, switches it to *Image* and sets the aspect ratio, x1–x4 images and model, types the prompt, clicks **Start generation**, and checks that generation really started before it waits.                                                                                                                                                                                                 |
+| **Downloads**              | Opens each new image and uses Flow's own **Download** button, so you get Flow's native file. 1K original size by default, or 2K upscaled with one checkbox. Files can go into a subfolder of Downloads or any folder you pick.                                                                                                                                                                                                                                     |
+| **Alembic bridge**         | Optional: lets [Alembic Generative Studio](https://github.com/thatBiologyStudent/alembic-generative-studio) (on `localhost:5178` or `thatbio.vercel.app`) generate and edit images through your open Flow project. Off until you tick **Allow Alembic to control Flow** in the side panel.                                                                                                                                                                         |
+| **Vision critique**        | Click **Critique with Vision AI** on a finished queue item to send the image back to the model, which critiques it against the prompt and queues improved variations.                                                                                                                                                                                                                                                                                              |
+| **Image-to-image**         | Images you attach in the chat are attached to every prompt generated from that message as Flow references (*Use images in Flow*, on by default). **🌊 From Flow** lets you pick any image already in the open Flow project, and **↪ Use as reference** on a finished queue item does the same with the image it generated; both are picked straight from your project instead of being re-uploaded. A global reference image in Settings is added to every prompt. |
 
 Supported Flow image settings (as of November 2026):
 
 - **Aspect ratio:** 16:9, 4:3, 1:1, 3:4, 9:16
 - **Images per prompt:** x1, x2, x3, x4
 - **Models:** Nano Banana 2.1, Nano Banana Pro, Nano Banana 2 Lite
+
+Flow's *Thinking level* setting is left as you set it in Flow.
 
 ---
 
@@ -37,11 +39,11 @@ Supported Flow image settings (as of November 2026):
 
 The side panel talks to any service that implements the OpenAI **Chat Completions** API (`POST {Base URL}/chat/completions`). You enter three things in the settings drawer:
 
-| Setting | Example | Notes |
-|---|---|---|
-| **Base URL** *(required)* | `https://api.openai.com/v1` | The URL up to and including `/v1`. A full `…/chat/completions` URL also works. |
-| **API Key** | `sk-…` | Sent as `Authorization: Bearer <key>`. Leave empty for local servers that don't need one. |
-| **Model Name** *(required)* | `gpt-4o-mini` | Type it, or click **🔄 Fetch Models** to load the list from `{Base URL}/models`. |
+| Setting                     | Example                     | Notes                                                                                     |
+|-----------------------------|-----------------------------|-------------------------------------------------------------------------------------------|
+| **Base URL** *(required)*   | `https://api.openai.com/v1` | The URL up to and including `/v1`. A full `…/chat/completions` URL also works.            |
+| **API Key**                 | `sk-…`                      | Sent as `Authorization: Bearer <key>`. Leave empty for local servers that don't need one. |
+| **Model Name** *(required)* | `gpt-4o-mini`               | Type it, or click **🔄 Fetch Models** to load the list from `{Base URL}/models`.          |
 
 What the model should support:
 
@@ -50,14 +52,14 @@ What the model should support:
 
 Providers that work this way include, for example:
 
-| Provider | Base URL |
-|---|---|
-| OpenAI | `https://api.openai.com/v1` |
-| OpenRouter (many models behind one key) | `https://openrouter.ai/api/v1` |
+| Provider                                   | Base URL                                                  |
+|--------------------------------------------|-----------------------------------------------------------|
+| OpenAI                                     | `https://api.openai.com/v1`                               |
+| OpenRouter (many models behind one key)    | `https://openrouter.ai/api/v1`                            |
 | Google Gemini (OpenAI-compatible endpoint) | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| Groq | `https://api.groq.com/openai/v1` |
-| Ollama (local) | `http://localhost:11434/v1` |
-| LM Studio (local) | `http://localhost:1234/v1` |
+| Groq                                       | `https://api.groq.com/openai/v1`                          |
+| Ollama (local)                             | `http://localhost:11434/v1`                               |
+| LM Studio (local)                          | `http://localhost:1234/v1`                                |
 
 Your API key is stored only in the extension's local storage in your browser (`chrome.storage.local`) and is sent only to the Base URL you enter.
 
@@ -67,10 +69,10 @@ Your API key is stored only in the extension's local storage in your browser (`c
 
 ### Option A: Load unpacked (recommended)
 
-1. Download the latest **`flow-sidecar-orchestrator-x.y.z.zip`** from [Releases](../../releases) and unzip it, or clone this repository.
+1. Download the latest `flow-sidecar-orchestrator-x.y.z.zip` from [Releases](../../releases) and unzip it, or clone this repository.
 2. Open `chrome://extensions` (Chrome) or `brave://extensions` (Brave).
 3. Turn on **Developer mode** (top right).
-4. Click **Load unpacked** and select the unzipped folder, or the **`flow-sidecar-extension`** folder in the cloned repository. Pick the folder that contains `manifest.json`.
+4. Click **Load unpacked** and select the unzipped folder, or the `flow-sidecar-extension` folder in the cloned repository. Pick the folder that contains `manifest.json`.
 5. Pin the extension and click its icon to open the side panel.
 
 To update, replace the folder's contents with a newer release and click **⟳ Reload** on the extension card. Your settings are kept.
@@ -100,33 +102,33 @@ Releases also include a signed `flow-sidecar-orchestrator-x.y.z.crx`. Chrome on 
 
 - **"Started debugging this browser" bar:** Flow ignores script-generated clicks on its *Start generation* button, so the extension clicks it through Chrome's debugger API (`Input.dispatchMouseEvent`). Chrome shows this bar while the click happens and removes it again right after. If you dismiss the bar with *Cancel* during a click, that one item fails and you can run it again.
 - **Keep the Flow tab visible** while a queue runs. Background tabs are throttled and timing can break.
-- **Agent mode "Confirm before generating":** if Flow's Agent is set to *Always* ask, Flow may wait for your confirmation. Set it to *Never* in Flow's Agent settings for unattended runs.
+- **Flow asks for confirmation:** if Flow waits for you to confirm a generation, the queue item waits too and eventually times out. Turn off confirmation prompts in Flow for unattended runs.
 - **Debug output:** the Flow tab's console (F12) logs every step with the prefix `[FlowSidecar]`, including which settings were applied and which download size was picked.
 
 ---
 
 ## Permissions
 
-| Permission | Why |
-|---|---|
-| `sidePanel` | The extension's UI lives in the browser side panel. |
-| `storage` | Saves your settings (including the API key) locally. |
-| `tabs`, `activeTab`, `scripting` | Finds the Flow tab and injects the automation script into it. |
-| `debugger` | Sends a real (trusted) mouse click to Flow's *Start generation* button. Only used on the Flow tab, only for that click. |
-| `downloads` | Saves results and routes Flow's own downloads into your chosen folder. |
-| Host access to `flow.google.com` / `labs.google` | Runs the automation on Flow. |
-| Host access to `<all_urls>` | Lets the side panel call whatever API Base URL you configure (including `localhost`). |
+| Permission                                       | Why                                                                                                                     |
+|--------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| `sidePanel`                                      | The extension's UI lives in the browser side panel.                                                                     |
+| `storage`                                        | Saves your settings (including the API key) locally.                                                                    |
+| `tabs`, `activeTab`, `scripting`                 | Finds the Flow tab and injects the automation script into it.                                                           |
+| `debugger`                                       | Sends a real (trusted) mouse click to Flow's *Start generation* button. Only used on the Flow tab, only for that click. |
+| `downloads`                                      | Saves results and routes Flow's own downloads into your chosen folder.                                                  |
+| Host access to `flow.google.com` / `labs.google` | Runs the automation on Flow.                                                                                            |
+| Host access to `<all_urls>`                      | Lets the side panel call whatever API Base URL you configure (including `localhost`).                                   |
 
 ---
 
 ## Browser support
 
-| Browser | Status |
-|---|---|
-| Chrome | ✅ Supported |
-| Brave | ✅ Supported. *Choose Folder* needs `brave://flags/#file-system-access-api`; subfolders in Downloads work without it. |
-| Edge, other Chromium browsers | Should work, not tested |
-| Firefox | ❌ Not supported. Firefox has no `debugger` or `sidePanel` API and no folder picker, and Flow ignores the script-generated clicks Firefox would have to rely on. |
+| Browser                       | Status                                                                                                                                                          |
+|-------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Chrome                        | ✅ Supported                                                                                                                                                     |
+| Brave                         | ✅ Supported. *Choose Folder* needs `brave://flags/#file-system-access-api`; subfolders in Downloads work without it.                                            |
+| Edge, other Chromium browsers | Should work, not tested                                                                                                                                         |
+| Firefox                       | ❌ Not supported. Firefox has no `debugger` or `sidePanel` API and no folder picker, and Flow ignores the script-generated clicks Firefox would have to rely on. |
 
 ---
 
