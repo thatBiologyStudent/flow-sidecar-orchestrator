@@ -789,6 +789,92 @@
     }
   }
 
+  /** The prompt box's settings button ("🍌 Nano Banana 2.1 · 16:9 · x2") of the current Flow layout. */
+  function findSettingsTrigger() {
+    return /** @type {HTMLElement|undefined} */ (
+      queryAllDeep('button[aria-label="Settings trigger"], button.settings-trigger-button', document).find((b) =>
+        isElementVisible(b)
+      )
+    ) || null;
+  }
+
+  /** The open settings popover, if any. */
+  function findSettingsPopover() {
+    const popover = document.querySelector("flow-prompt-box-settings");
+    return popover && isElementVisible(popover) ? /** @type {HTMLElement} */ (popover) : null;
+  }
+
+  /**
+   * Applies mode (Image), aspect ratio, output count and model in the settings popover, then closes it.
+   * @param {HTMLElement} trigger
+   * @param {string} ratio
+   * @param {string} model
+   * @param {number} count
+   */
+  async function applyFlowParametersInPopover(trigger, ratio, model, count) {
+    let popover = findSettingsPopover();
+    if (!popover) {
+      simulateRealClick(trigger);
+      for (let i = 0; i < 12 && !popover; i++) {
+        await sleep(120);
+        popover = findSettingsPopover();
+      }
+    }
+    if (!popover) {
+      console.warn("[FlowSidecar] Settings: the settings popover did not open.");
+      return;
+    }
+
+    const group = (name) =>
+      /** @type {HTMLElement} */ (popover.querySelector(`flow-toggles[aria-label="${name}"]`)) || popover;
+    const missing = [];
+    try {
+      // Aspect ratio and output count belong to the selected mode: make sure it is Image
+      if (popover.querySelector('flow-toggles[aria-label="Mode"]') && !(await selectToggleOption(group("Mode"), "Image"))) {
+        missing.push('mode "Image"');
+      }
+      if (ratio && !(await selectToggleOption(group("Aspect ratio"), ratio))) {
+        missing.push(`aspect ratio "${ratio}"`);
+      }
+      if (!(await selectToggleOption(group("Output count"), `x${count}`))) {
+        missing.push(`images per prompt "x${count}"`);
+      }
+      if (model && !(await selectImageModel(popover, model))) {
+        missing.push(`model "${model}"`);
+      }
+      if (missing.length) {
+        console.warn("[FlowSidecar] Settings: could not set", missing.join(", "), {
+          availableControls: listControlLabels(popover)
+        });
+      } else {
+        console.debug("[FlowSidecar] Settings applied:", { ratio, model, count });
+      }
+    } finally {
+      await closeSettingsPopover(trigger);
+    }
+  }
+
+  /** Closes the settings popover (backdrop, then the trigger itself, then Escape). */
+  async function closeSettingsPopover(trigger) {
+    const attempts = [
+      () => {
+        const backdrop = document.querySelector(".cdk-overlay-backdrop.settings-menu-backdrop, .cdk-overlay-backdrop");
+        if (backdrop instanceof HTMLElement) backdrop.click();
+      },
+      () => simulateRealClick(findSettingsTrigger() || trigger),
+      () =>
+        document.body.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, key: "Escape", code: "Escape", keyCode: 27 })
+        )
+    ];
+    for (const attempt of attempts) {
+      if (!findSettingsPopover()) break;
+      attempt();
+      for (let i = 0; i < 6 && findSettingsPopover(); i++) await sleep(100);
+    }
+    if (findSettingsPopover()) console.warn("[FlowSidecar] Settings: could not close the settings popover.");
+  }
+
   /**
    * 3. Aspect Ratio, Model & Images-per-Prompt Selection:
    * Opens the Flow composer's own Sliders/Settings button (inside the prompt box next to `→`),
@@ -805,6 +891,14 @@
     const clampedCount = Math.min(4, Math.max(1, Math.round(Number(imagesPerPrompt) || 1)));
     const normRatio = (aspectRatio || "").trim();
     const normModel = (targetModel || "").trim();
+
+    // Current Flow layout (Nov 2026): a "Settings trigger" button in the prompt box opens a popover
+    // with Mode, Aspect ratio, model, Thinking level and Output count; changes apply immediately.
+    const settingsTrigger = findSettingsTrigger();
+    if (settingsTrigger) {
+      await applyFlowParametersInPopover(settingsTrigger, normRatio, normModel, clampedCount);
+      return;
+    }
 
     // Skip opening Agent settings if the exact same parameters were already applied in this tab session
     if (
