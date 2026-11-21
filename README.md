@@ -75,7 +75,7 @@ Your API key is stored only in the extension's local storage in your browser (`c
 4. Click **Load unpacked** and select the unzipped folder, or the `flow-sidecar-extension` folder in the cloned repository. Pick the folder that contains `manifest.json`.
 5. Pin the extension and click its icon to open the side panel.
 
-To update, replace the folder's contents with a newer release and click **⟳ Reload** on the extension card. Your settings are kept.
+To update, replace the folder's contents with a newer release and click **⟳ Reload** on the extension card. Your settings are kept. From 1.2.6 on, the extension checks GitHub for new releases (at most every 12 hours) and shows a **↑** badge on its icon and a notice in the side panel when one is available.
 
 ### Option B: The `.crx` package
 
@@ -155,7 +155,7 @@ There is no build step: the extension is plain JavaScript.
 ### Packaging a release
 
 ```bash
-cd flow-sidecar-extension && zip -r -X ../dist/flow-sidecar-orchestrator-<version>.zip manifest.json assets background content sidepanel
+cd flow-sidecar-extension && zip -r -X ../dist/flow-sidecar-orchestrator-<version>.zip manifest.json update-check.js assets background bridge content sidepanel
 ```
 
 Bump `"version"` in `manifest.json` first. To build a signed `.crx`, use the browser's **Pack extension** button on the extensions page (or `--pack-extension`) and always reuse the same private key (`.pem`) so the extension ID stays the same. Never commit the key.

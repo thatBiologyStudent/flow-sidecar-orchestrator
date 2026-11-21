@@ -1707,3 +1707,6 @@ function bindEvents() {
   await loadConfigFromStorage();
   renderQueueTable();
 })();
+
+// GitHub update notice (update-check.js)
+globalThis.ExtensionUpdate?.showBanner();
