@@ -3,6 +3,8 @@
  * Manages the side panel lifecycle, content script injection, and image downloads.
  */
 
+import "../update-check.js";
+
 // Configure side panel to open automatically when the extension toolbar icon is clicked
 function initSidePanelBehavior() {
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
@@ -14,13 +16,16 @@ function initSidePanelBehavior() {
 
 chrome.runtime.onInstalled.addListener(() => {
   initSidePanelBehavior();
+  globalThis.ExtensionUpdate?.updateBadge(true);
 });
 
 chrome.runtime.onStartup.addListener(() => {
   initSidePanelBehavior();
+  globalThis.ExtensionUpdate?.updateBadge(true);
 });
 
-// Initialize immediately on worker evaluation as well
+// Initialize immediately on worker evaluation as well (the update check is cached for 12 h)
+globalThis.ExtensionUpdate?.updateBadge(false);
 initSidePanelBehavior();
 
 /**
